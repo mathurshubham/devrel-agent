@@ -218,92 +218,27 @@ async def promote_to_super_admin(
 
 ---
 
+## 6. Security Specification
 
-
-## 11. Frontend UX Specifications
-
-> **Teammate 3:** The Command (`⌘K`) palette must work globally — from any page, not just the dashboard. Implement via a client-side provider at the root layout level with a router integration for navigation actions.
-
-| Feature | shadcn Component | Specification |
-|---------|-----------------|---------------|
-| Draft inbox table | `DataTable` (TanStack Table) | Server-side pagination (50/page). Sort: `created_at`, `confidence_score`, `status`, `subreddit`. Filter: status (multi), subreddit, `is_auto_pilot`. Bulk select for TryEval export. Full-text search via `/api/drafts?q=` (uses PostgreSQL FTS index). |
-| Draft review | `Sheet` | Slide-out panel. Reddit thread left, editable draft right. Shows `model_used`, confidence badge, `prompt_template_version`, truncation indicator. "Preview compiled system prompt" button. |
-| Confidence explanation | `Popover` + `Badge` | Confidence score badge is clickable. Popover shows `triage_reasoning` broken into bullet points. Example: "Confidence: 0.91 — Mentions RAG • Benchmarking context • Evaluation intent" |
-| Async feedback | `Toast` (Sonner) | 3-state publish: "Queued" → "Publishing…" → "Published ✓ / Failed ✗". Bottom-right. Max 3 toasts. |
-| Loading states | `Skeleton` | Inbox rows and draft card while React Query fetches. |
-| Destructive actions | `AlertDialog` | Kill Switch, Force Lock Takeover, Campaign Archive, Org deletion, Super Admin promotion. |
-| Navigation | `Command` (⌘K) | **Global** — mounted at root layout. Jump to campaigns, subreddits, settings, audit log. Works from any page. |
-| Role-gated UI | Clerk `<Protect>` | Wraps Admin-only: Kill Switch, Vault management, Auto-Pilot config, Safety Profiles, Super Admin promotion. |
-| Org switching | `OrganizationSwitcher` | `hidePersonal={true}`. Redirects to `/onboarding` on new org creation. |
-| Confidence display | `Badge` + `Progress` | Green (>0.85), Yellow (0.5–0.85), Red (<0.5). Shown in inbox row and draft `Sheet`. Clickable → confidence explanation popover. |
-| Safety Profile status | `Badge` + `Tooltip` | "Safety Override" badge on drafts from restricted subreddits. Tooltip explains which profile rule blocked auto-pilot. |
-| Cost limit alert | `Alert` (destructive) | Org-level banner when `FAILED_COST_LIMIT` drafts detected. Links to LLM Config vault to adjust limits. |
-| Keyword type indicator | `Badge` | `[regex]` badge on keyword entries that start with `regex:` prefix in Campaign configuration UI. |
-
-**Accessibility:**
-- Keyboard shortcuts when `Sheet` is open: `A` = Approve, `R` = Reject, `E` = Edit, `P` = Publish. Documented in a `<KeyboardShortcutHelper />` tooltip.
-- All interactive components have correct `aria-label`, `aria-describedby`, `role`. shadcn/ui provides these — do not override.
-- Dark Mode is the default. Theme toggle in `UserButton` dropdown. System preference respected on first load.
-- Minimum contrast ratio 4.5:1 for all body text (WCAG AA).
+| Control | Requirement | Severity |
+|---------|-------------|----------|
+| Clerk Token Verification | Server-side Clerk SDK on every FastAPI request. JWKS cached 5 min. Client claims never trusted. | 🔴 CRITICAL |
+| Webhook Replay Attack Guard | `svix-timestamp` header checked before idempotency DB lookup. Requests older than 5 minutes rejected with 400. | 🔴 CRITICAL |
+| Webhook HMAC + Idempotency | `svix-signature` HMAC verified on all Clerk webhooks. `svix-id` persisted via `ON CONFLICT DO NOTHING` (not raw try/except). | 🔴 CRITICAL |
+| ENCRYPTION_SECRET Startup Validation | Must be exactly 64 hex characters. Application refuses to start if invalid. | 🔴 CRITICAL |
+| Fernet Encryption at Rest | All secrets encrypted with Fernet. KMS mandatory for hosted/prod. | 🔴 CRITICAL |
+| Redis TLS + AUTH + ACLs | TLS mandatory for hosted deployments. ACL users restrict Celery workers to specific key patterns. | 🔴 CRITICAL |
+| PRAW Token Refresh Lock + Jitter | Redis `nx=True` distributed lock. Polling fallback uses 100–150ms jitter to prevent thundering herd. | 🔴 CRITICAL |
+| LLM Cost Protection | `max_daily_llm_tokens` and `max_monthly_llm_cost_usd` on `OrgLLMConfig`. `FAILED_COST_LIMIT` status on draft when exceeded. | 🟡 HIGH |
+| FastAPI User Rate Limiting | `slowapi` middleware. Test-rules: 10/min/user. Publish: 20/min/user. | 🟡 HIGH |
+| Celery Publish Idempotency | Redis key `praw_publish:{draft_id}` (TTL 5 min) prevents double-publish on task retry. `DraftReply.status == PUBLISHED` check before dispatch. | 🟡 HIGH |
+| Kill Switch Rate Limiting | Kill Switch deletions routed through `praw_publish` queue with 2-second delay. | 🟡 HIGH |
+| Subreddit Safety Profiles | Per-subreddit auto-pilot override. Checked at ConfidenceGate before any auto-publish. | 🟡 HIGH |
+| Persona Save Validation | Reject persona save if `master_context_tokens + rulesets_token_count > 80%` of model limit. | 🟡 HIGH |
+| Uvicorn Proxy Headers | `--proxy-headers --forwarded-allow-ips='*'` for correct client IP parsing behind reverse proxies. | 🟡 HIGH |
+| SQL Injection Prevention | SQLAlchemy ORM with parameterized queries. No raw string SQL. | 🟡 HIGH |
+| CORS Policy | `allow_origins` restricted to `NEXT_PUBLIC_APP_URL`. Wildcard `*` prohibited. | 🟡 HIGH |
+| Dependency SCA | Dependabot + `pip-audit` in CI. HIGH/CRITICAL CVEs patched within 7 days. | 🟡 HIGH |
+| Secret Scanning | GitHub Secret Scanning + `gitleaks` pre-commit hook. | 🟡 HIGH |
 
 ---
-
-
-## 13. Test Plan, CI/CD & Contract Tests
-
-| Test Type | Scope | Tool | Coverage Target |
-|-----------|-------|------|-----------------|
-| Unit | Fernet encrypt/decrypt, startup validation (64-char check **and** missing value), tokenizer budget, truncation logic, PRAW distributed lock + jitter, Redis ZSET scheduler, cost guard logic, persona save validation (80% limit) | pytest | 100% of `utils/` |
-| Integration | FastAPI endpoints with test PostgreSQL DB, Celery task dispatch, `SubredditSafetyProfile` enforcement, cost limit enforcement, rate-limit middleware (slowapi) | pytest + httpx | > 80% API routes |
-| E2E — HITL | Webhook sync → Campaign create → Scraper → Draft (LangGraph mocked) → Human approve → PRAW publish | pytest | Full happy path |
-| E2E — Auto-Pilot | High-confidence draft → Safety Profile check → auto-publish → AuditLog → Kill Switch (rate-aware, praw_publish queue) → `DELETED_BY_KILLSWITCH` | pytest | Full flow |
-| E2E — Cost Limit | Draft generation when `max_daily_llm_tokens` is exceeded → `FAILED_COST_LIMIT` status + AuditLog | pytest | Cost guard enforced |
-| E2E — Publish Idempotency | Celery task retried after simulated worker crash → second execution skips PRAW call (Redis key `praw_publish:{draft_id}` prevents double-post) | pytest | Idempotency confirmed |
-| E2E — Safety Profile | Draft from restricted subreddit (`allow_auto_pilot=false`) routed to HITL despite confidence > 0.95 | pytest | Override confirmed |
-| E2E — Concurrency | Two workers try PRAW token refresh simultaneously → one refreshes, others read cached value (with jitter). Draft lock TTL expiry auto-releases. | pytest | Both scenarios |
-| E2E — Webhook Replay | Webhook with `svix-timestamp` older than 5 minutes → rejected with 400. Valid webhook with same `svix-id` delivered twice → exactly one DB write. | pytest | Both rejection + idempotency |
-| E2E — Persona Validation | Persona save with `master_context_tokens + rulesets_token_count > 80%` of model limit → 422 error returned | pytest | Validation enforced |
-| Contract — TryEval | Export endpoint JSON matches v1.0 schema (jsonschema) for all `DraftStatus` values. Includes `prompt_template_version`. | pytest + jsonschema | All statuses |
-| Security | MEMBER cannot access ADMIN routes. Invalid `ENCRYPTION_SECRET` (< 64 chars AND missing) → startup exit. CORS rejects wildcard origin. Rate limiter returns 429 on limit breach. | pytest | All RBAC + startup |
-| Frontend E2E | Publish 3-state UI, Sheet lock display + Force Takeover, Safety Profile badge, confidence explanation popover, ⌘K global nav, bulk TryEval export, cost limit banner | Playwright | Critical journeys |
-
-### CI Pipeline (GitHub Actions)
-
-```yaml
-# .github/workflows/ci.yml
-on: [push, pull_request]
-jobs:
-  backend:
-    runs-on: ubuntu-latest
-    services:
-      postgres: { image: postgres:15, env: { POSTGRES_PASSWORD: test } }
-      redis:    { image: redis:7 }
-    env:
-      ENCRYPTION_SECRET: "0000000000000000000000000000000000000000000000000000000000000000"  # Test-only 64-char value
-    steps:
-      - uses: actions/checkout@v4
-      - run: pip install -r requirements-dev.txt
-      - run: alembic upgrade head
-      - run: pytest --cov=backend --cov-fail-under=80 -v
-      - run: bandit -r backend/          # Security linting
-      - run: pip-audit                   # CVE scan
-
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: npm ci && npm run build
-      - run: npx playwright test
-
-  contract:
-    runs-on: ubuntu-latest
-    steps:
-      - run: pytest tests/contract/ -v   # TryEval schema + webhook idempotency + replay guard
-```
-
-> **Teammate 3:** The CI pipeline injects a valid 64-character test `ENCRYPTION_SECRET` so the startup validation passes in CI without requiring a real secret. A separate test case asserts that the application **exits** when given an invalid (non-64-char) value.
-
----
-
-*End of TRD v6.0 — OSS DevRel AI Agent (Sentinel / TryEval DevRel)*  
-*Version 6.0 · FINAL · Approved for Development*
