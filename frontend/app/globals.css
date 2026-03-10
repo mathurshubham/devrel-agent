@@ -112,7 +112,7 @@
 
 @layer base {
   * {
-    @apply border-border/40 outline-ring/50 shadow-none !;
+    @apply !border-border/40 !outline-ring/50 !shadow-none;
   }
 
   body {

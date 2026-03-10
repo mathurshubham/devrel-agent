@@ -22,6 +22,8 @@ services:
     build: ./backend
     # Alembic runs migrations + seed before Uvicorn starts — idempotent on every restart.
     # --proxy-headers and --forwarded-allow-ips required for Cloudflare tunnel / ngrok / nginx.
+    ports:
+      - "8000:8000" # <--- MUST ADD THIS LINE
     command: >
       sh -c 'alembic upgrade head &&
              python seed.py &&
