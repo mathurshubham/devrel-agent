@@ -5,6 +5,7 @@ from slowapi import _rate_limit_exceeded_handler
 from backend.limiter import limiter
 from backend.utils.encryption import _fernet  # Trigger startup validation
 from backend.api.org import router as org_router
+from backend.api.webhooks import router as webhooks_router
 
 app = FastAPI(
     title="Sentinel / TryEval OSS DevRel AI Agent",
@@ -15,6 +16,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(org_router)
+app.include_router(webhooks_router, prefix="/api/webhooks", tags=["Webhooks"])
 
 @app.get("/health")
 @limiter.limit("60/minute")

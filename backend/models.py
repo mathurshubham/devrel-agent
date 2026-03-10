@@ -144,8 +144,8 @@ class User(Base):
     last_login_at      : Mapped[Optional[datetime]]= mapped_column(DateTime(timezone=True))
     invited_by_user_id : Mapped[Optional[int]]     = mapped_column(ForeignKey("users.id"))
 
-    org_id      : Mapped[int]            = mapped_column(ForeignKey("organizations.id"))
-    organization: Mapped["Organization"] = relationship(back_populates="users")
+    org_id      : Mapped[Optional[int]]     = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    organization: Mapped[Optional["Organization"]] = relationship(back_populates="users")
 
 
 # ── RedditAccount — PRAW Vault ────────────────────────────────────────────────
