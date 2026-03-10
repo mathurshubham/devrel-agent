@@ -4,7 +4,10 @@ from datetime import date
 from sqlalchemy.future import select
 from litellm import completion
 from backend.database import SessionLocal
-from backend.models import Campaign, OrgLLMConfig, OrgPersona, SubredditSafetyProfile, DraftStatus
+from backend.models import (
+    Campaign, OrgLLMConfig, OrgPersona, SubredditSafetyProfile, 
+    DraftStatus, PromptTemplate
+)
 from backend.utils.encryption import decrypt
 from backend.utils.cost_guard import check_and_record_llm_usage
 from backend.utils.tokenizer import count_tokens
@@ -33,14 +36,33 @@ async def draft_generator(state: AgentState) -> AgentState:
         model = llm_config.model_name
         api_key = decrypt(llm_config.encrypted_api_key) if llm_config.encrypted_api_key else None
 
-        # Build prompt from persona
-        system_prompt = (
-            f"Master Context: {persona.master_context}\n\n"
-            f"Rules (Do's & Don'ts): {persona.rulesets_dos_donts}\n\n"
-            f"Tone Guidelines: {persona.tone_guidelines}\n\n"
-            "Generate a helpful and authentic Reddit reply to the following content."
-        )
+        # Fetch Dynamic Prompt Template (TRD Section 5.3)
+        # Priority: Org-specific Template -> System Default Template
+        stmt = select(PromptTemplate).where(
+            (PromptTemplate.org_id == campaign.org_id) | (PromptTemplate.is_system_default == True)
+        ).order_by(PromptTemplate.org_id.desc()) # Custom org template first if it exists
         
+        template_result = await db.execute(stmt)
+        prompt_template = template_result.scalars().first()
+        
+        if not prompt_template:
+             # Fallback if no template found (should not happen with system defaults)
+             system_prompt = (
+                f"Master Context: {persona.master_context}\n\n"
+                f"Rules (Do's & Don'ts): {persona.rulesets_dos_donts}\n\n"
+                f"Tone Guidelines: {persona.tone_guidelines}\n\n"
+                "Generate a helpful and authentic Reddit reply to the following content."
+            )
+             template_version = "legacy_v1"
+        else:
+            # Inject Variables into Prompt Template
+            system_prompt = prompt_template.prompt_body.format(
+                master_context=persona.master_context or "",
+                rulesets_dos_donts=persona.rulesets_dos_donts or "{}",
+                tone_guidelines=persona.tone_guidelines or ""
+            )
+            template_version = f"{prompt_template.title}_v{prompt_template.version}"
+
         # Estimate tokens for cost guard
         estimated_tokens = count_tokens(model, system_prompt + original_text)
         
@@ -75,7 +97,8 @@ async def draft_generator(state: AgentState) -> AgentState:
         return {
             **state,
             "ai_draft_text": draft_text,
-            "model_payload_token_count": token_count
+            "model_payload_token_count": token_count,
+            "prompt_template_version": template_version
         }
 
 async def confidence_gate(state: AgentState) -> AgentState:

@@ -83,7 +83,7 @@ def scraper_task(self, campaign_id: int):
             # 3. Initialize PRAW (Read-only/OAuth)
             reddit = praw.Reddit(
                 client_id=account.client_id,
-                client_secret=decrypt(account.encrypted_secret),
+                client_secret=decrypt(account.encrypted_secret, version=account.encrypted_with_key_version),
                 access_token=token,
                 user_agent="SentinelDevRelAgent/1.0"
             )
@@ -220,11 +220,21 @@ def praw_publish_task(self, draft_id: int):
                     return
 
                 # 3. Publish Execution
+                import praw
                 token = await get_praw_token(account.id, account, redis_client)
                 logger.info(f"Publishing reply via account {account.username}")
                 
-                # Simulation result
-                published_url = f"https://reddit.com/r/{campaign.subreddit_name}/comments/{draft.reddit_post_id}/_/{draft_id}"
+                reddit = praw.Reddit(
+                    client_id=account.client_id,
+                    client_secret=decrypt(account.encrypted_secret, version=account.encrypted_with_key_version),
+                    access_token=token,
+                    user_agent="SentinelDevRelAgent/1.0"
+                )
+
+                # Fetch submission and post reply
+                submission = reddit.submission(id=draft.reddit_post_id)
+                reply = submission.reply(draft.ai_draft_text)
+                published_url = f"https://reddit.com{reply.permalink}"
                 
                 # 4. Successful State Transition
                 draft.status = DraftStatus.PUBLISHED
@@ -237,11 +247,11 @@ def praw_publish_task(self, draft_id: int):
                     db, 
                     org_id=campaign.org_id,
                     action="DRAFT_PUBLISHED",
-                    details={"draft_id": draft_id, "account": account.username, "url": published_url}
+                    details={"draft_id": draft_id, "account": account.username, "url": published_url, "comment_id": reply.id}
                 )
                 
                 await db.commit()
-                logger.info(f"Published Draft {draft_id} successfully.")
+                logger.info(f"Published Draft {draft_id} successfully as {reply.id}.")
 
         except Exception as e:
             logger.error(f"Publish failure for draft {draft_id}: {str(e)}")
@@ -292,7 +302,18 @@ def praw_delete(self, draft_id: int):
                 self.retry(countdown=2)
                 return
 
-            # SIMULATION: Comment deletion via PRAW
+            # Actual PRAW Comment deletion
+            import praw
+            token = await get_praw_token(account.id, account, redis_client)
+            reddit = praw.Reddit(
+                client_id=account.client_id,
+                client_secret=decrypt(account.encrypted_secret, version=account.encrypted_with_key_version),
+                access_token=token,
+                user_agent="SentinelDevRelAgent/1.0"
+            )
+            
+            comment = reddit.comment(url=draft.live_reddit_url)
+            comment.delete()
             logger.info(f"Deleted comment {draft.live_reddit_url} from account {account.username}")
             
             # Transition status
@@ -303,7 +324,7 @@ def praw_delete(self, draft_id: int):
                 db,
                 org_id=campaign.org_id,
                 action="KILLSWITCH_POST_DELETED",
-                details={"draft_id": draft_id, "account": account.username}
+                details={"draft_id": draft_id, "account": account.username, "url": draft.live_reddit_url}
             )
             
             await db.commit()

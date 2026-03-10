@@ -3,13 +3,14 @@ import logging
 import os
 import time
 import redis.asyncio as redis
+from datetime import datetime, timezone, timedelta
 from typing import List
 
 from sqlalchemy.future import select
 from celery_app import celery_app
 
 from backend.database import SessionLocal
-from backend.models import Campaign, CampaignStatus, Organization
+from backend.models import Campaign, CampaignStatus, Organization, ProcessedWebhookEvent
 
 logger = logging.getLogger(__name__)
 
@@ -93,4 +94,27 @@ async def enqueue_campaign(campaign_id: int, poll_frequency_minutes: int):
 async def remove_campaign(campaign_id: int):
     """Remove a campaign from the scheduler."""
     await redis_client.zrem(SCHEDULER_KEY, str(campaign_id))
+
+
+@celery_app.task(name="tasks.scheduler.purge_old_webhook_events", bind=True, queue="maintenance")
+def purge_old_webhook_events(self):
+    """
+    Maintenance task: Purges idempotency rows older than 30 days.
+    TRD Section 12 implementation.
+    """
+    async def _purge():
+        logger.info("Running purge_old_webhook_events task")
+        expiry_threshold = datetime.now(timezone.utc) - timedelta(days=30)
+        
+        from sqlalchemy import delete
+        async with SessionLocal() as db:
+            stmt = delete(ProcessedWebhookEvent).where(
+                ProcessedWebhookEvent.processed_at < expiry_threshold
+            )
+            result = await db.execute(stmt)
+            await db.commit()
+            
+            logger.info(f"Purged {result.rowcount} expired webhook idempotency rows.")
+
+    asyncio.run(_purge())
 
