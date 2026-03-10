@@ -90,42 +90,56 @@ async def confidence_gate(state: AgentState) -> AgentState:
         campaign = await db.get(Campaign, campaign_id)
         
         # Check Subreddit Safety Profile
-        result = await db.execute(
-            select(SubredditSafetyProfile).where(
-                SubredditSafetyProfile.org_id == campaign.org_id,
-                SubredditSafetyProfile.subreddit_name == campaign.subreddit_name
-            )
+        stmt = select(SubredditSafetyProfile).where(
+            SubredditSafetyProfile.org_id == campaign.org_id,
+            SubredditSafetyProfile.subreddit_name == campaign.subreddit_name
         )
+        result = await db.execute(stmt)
         safety_profile = result.scalar_one_or_none()
         
         allow_auto = campaign.is_auto_pilot_enabled
-        if safety_profile:
-            if not safety_profile.allow_auto_pilot:
-                allow_auto = False
-            # We could also check max_daily_posts here if needed
-            
+        daily_limit = campaign.auto_pilot_daily_limit
         threshold = campaign.auto_pilot_confidence_threshold
-        
-        # Check Redis counter for autopilot limit
+
+        if safety_profile:
+            # Profile overrides: disabling auto-pilot or requiring manual review
+            if not safety_profile.allow_auto_pilot or safety_profile.require_manual_review:
+                allow_auto = False
+            
+            # Subreddit-level post limit (per org)
+            daily_limit = min(daily_limit, safety_profile.max_daily_posts)
+            
+        # Check Redis counters
         today = date.today().isoformat()
-        auto_key = f"autopilot:count:{campaign_id}:{today}"
-        auto_count_raw = await async_redis.get(auto_key)
-        auto_count = int(auto_count_raw or 0)
+        
+        # 1. Campaign-level counter
+        campaign_key = f"autopilot:count:campaign:{campaign_id}:{today}"
+        campaign_count = int(await async_redis.get(campaign_key) or 0)
+        
+        # 2. Subreddit-level counter (enforced by Safety Profile)
+        subreddit_key = f"autopilot:count:subreddit:{campaign.org_id}:{campaign.subreddit_name}:{today}"
+        subreddit_count = int(await async_redis.get(subreddit_key) or 0)
         
         is_eligible = (
             confidence >= threshold and
             allow_auto and
-            auto_count < campaign.auto_pilot_daily_limit
+            campaign_count < campaign.auto_pilot_daily_limit and
+            subreddit_count < daily_limit
         )
         
         final_status = DraftStatus.PUBLISHED if is_eligible else DraftStatus.PENDING
         
-        # If published, increment Redis counter
+        # If published, increment Redis counters
         if final_status == DraftStatus.PUBLISHED:
-            await async_redis.incr(auto_key)
-            # Set expiry if new key
-            if auto_count == 0:
-                await async_redis.expire(auto_key, 86400) # 24h
+            # Increment campaign counter
+            await async_redis.incr(campaign_key)
+            if campaign_count == 0:
+                await async_redis.expire(campaign_key, 86400)
+            
+            # Increment subreddit counter
+            await async_redis.incr(subreddit_key)
+            if subreddit_count == 0:
+                await async_redis.expire(subreddit_key, 86400)
                 
         return {
             **state,

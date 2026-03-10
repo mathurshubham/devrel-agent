@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict
+from datetime import datetime
 
 class LLMConfigUpdate(BaseModel):
     provider: str = Field(..., description="LLM provider: openai, anthropic, gemini, openrouter, ollama")
@@ -21,3 +22,33 @@ class RedditAccountUpdate(BaseModel):
     refresh_token: Optional[str] = None
     # Password flow fallback (if no refresh token)
     password: Optional[str] = None
+
+class SubredditSafetyProfileBase(BaseModel):
+    subreddit_name: str
+    allow_auto_pilot: bool = True
+    max_daily_posts: int = 5
+    require_manual_review: bool = False
+    notes: Optional[str] = None
+
+class SubredditSafetyProfileCreate(SubredditSafetyProfileBase):
+    pass
+
+class SubredditSafetyProfileSchema(SubredditSafetyProfileBase):
+    id: int
+    org_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+class AuditLogSchema(BaseModel):
+    id: int
+    action: str
+    details: Optional[Dict] = None
+    created_at: datetime
+    user_id: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class OrgUsageSchema(BaseModel):
+    daily_tokens: int
+    monthly_cost_usd: float
+    max_daily_tokens: Optional[int]
+    max_monthly_cost: Optional[float]
+

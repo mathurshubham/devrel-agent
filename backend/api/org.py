@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc, update
 import litellm
 import os
+from datetime import date
+from typing import List
+import redis.asyncio as redis
 
 from backend.database import get_db
-from backend.models import OrgLLMConfig, OrgPersona, Organization
-from backend.schemas import LLMConfigUpdate, PersonaUpdate, RedditAccountUpdate
+from backend.models import OrgLLMConfig, OrgPersona, Organization, AuditLog, Campaign, CampaignStatus, RedditAccount
+from backend.schemas import LLMConfigUpdate, PersonaUpdate, RedditAccountUpdate, AuditLogSchema, OrgUsageSchema
 from backend.utils.tokenizer import (
     count_tokens, 
     update_persona_token_counts, 
@@ -15,9 +18,81 @@ from backend.utils.tokenizer import (
 from backend.utils.encryption import encrypt
 from backend.utils.audit import write_audit_log
 from backend.limiter import limiter
-
 from backend.utils.auth import get_current_session
-from backend.models import RedditAccount
+
+router = APIRouter(prefix="/api/org", tags=["Organization"])
+
+@router.get("/usage", response_model=OrgUsageSchema)
+async def get_org_usage(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Fetch daily token and monthly cost usage from Redis.
+    """
+    org_id = session["org_id"]
+    REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    r = redis.from_url(REDIS_URL)
+    
+    daily_key = f"llm:tokens:{org_id}:{date.today().isoformat()}"
+    month_key = f"llm:cost_usd:{org_id}:{date.today().strftime('%Y-%m')}"
+    
+    daily_tokens = await r.get(daily_key)
+    monthly_cost = await r.get(month_key)
+    
+    # Get limits from DB
+    stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
+    result = await db.execute(stmt)
+    config = result.scalar_one_or_none()
+    
+    return {
+        "daily_tokens": int(daily_tokens or 0),
+        "monthly_cost_usd": float(monthly_cost or 0.0),
+        "max_daily_tokens": config.max_daily_llm_tokens if config else None,
+        "max_monthly_cost": config.max_monthly_llm_cost_usd if config else None
+    }
+
+@router.get("/audit-logs", response_model=List[AuditLogSchema])
+async def get_audit_logs(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Fetch the organization's audit log history.
+    """
+    org_id = session["org_id"]
+    stmt = select(AuditLog).where(AuditLog.org_id == org_id).order_by(desc(AuditLog.timestamp)).limit(100)
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+@router.post("/kill-switch")
+async def activate_kill_switch(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Emergency stop: Pauses all active campaigns for the organization.
+    """
+    org_id = session["org_id"]
+    
+    # 1. Pause all active campaigns
+    await db.execute(
+        update(Campaign)
+        .where(Campaign.org_id == org_id, Campaign.status == CampaignStatus.ACTIVE)
+        .values(status=CampaignStatus.PAUSED)
+    )
+    
+    # 2. Log it
+    await write_audit_log(
+        db, 
+        org_id, 
+        action='KILLSWITCH_ACTIVATED',
+        details={'reason': 'Manual emergency stop triggered via Settings'},
+        user_id=session["user_id"]
+    )
+    
+    await db.commit()
+    return {"status": "success", "message": "All campaigns have been paused."}
 
 @router.get("/status")
 async def get_org_status(
