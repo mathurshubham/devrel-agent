@@ -69,24 +69,30 @@ const items = [
 
 export function AppSidebar() {
     return (
-        <Sidebar collapsible="icon" className="border-r border-border/40">
-            <SidebarHeader className="h-16 flex items-center px-6 border-b border-border/40">
-                <div className="flex items-center gap-2 font-semibold">
-                    <Terminal className="h-5 w-5 text-primary" />
-                    <span className="group-data-[collapsible=icon]:hidden">TryEval</span>
+        <Sidebar collapsible="icon" className="border-r border-border/40 bg-zinc-950 dark:bg-zinc-950">
+            <SidebarHeader className="h-14 flex items-center px-4 border-b border-border/40 bg-zinc-950">
+                <div className="flex items-center gap-2.1 font-bold tracking-tighter text-sm uppercase">
+                    <div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
+                        <Terminal className="h-3.5 w-3.5 text-primary-foreground" />
+                    </div>
+                    <span className="group-data-[collapsible=icon]:hidden">Sentinel</span>
                 </div>
             </SidebarHeader>
-            <SidebarContent>
+            <SidebarContent className="bg-zinc-950">
                 <SidebarGroup>
-                    <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+                    <SidebarGroupLabel className="text-[10px] font-mono uppercase tracking-widest opacity-50 px-2 py-4">Main Ops</SidebarGroupLabel>
                     <SidebarGroupContent>
                         <SidebarMenu>
                             {items.map((item) => (
                                 <SidebarMenuItem key={item.title}>
-                                    <SidebarMenuButton asChild tooltip={item.title}>
-                                        <a href={item.url}>
-                                            <item.icon />
-                                            <span>{item.title}</span>
+                                    <SidebarMenuButton
+                                        asChild
+                                        tooltip={item.title}
+                                        className="hover:bg-zinc-900 transition-none rounded-none border-l-2 border-transparent data-[active=true]:border-primary data-[active=true]:bg-zinc-900"
+                                    >
+                                        <a href={item.url} className="flex items-center gap-3 px-3 py-2">
+                                            <item.icon className="h-4 w-4 opacity-70" />
+                                            <span className="text-xs font-medium tracking-tight group-data-[collapsible=icon]:hidden">{item.title}</span>
                                         </a>
                                     </SidebarMenuButton>
                                 </SidebarMenuItem>
@@ -95,15 +101,14 @@ export function AppSidebar() {
                     </SidebarGroupContent>
                 </SidebarGroup>
             </SidebarContent>
-            <SidebarFooter className="border-t border-border/40 p-4">
-                {/* Placeholder for User Profile/Org Switcher */}
-                <div className="flex items-center gap-3 px-2">
-                    <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
-                        <Settings className="h-4 w-4" />
+            <SidebarFooter className="border-t border-border/40 p-3 bg-zinc-950">
+                <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-zinc-900 cursor-pointer transition-colors group">
+                    <div className="h-7 w-7 rounded border border-border/40 bg-zinc-900 flex items-center justify-center text-[10px] font-bold">
+                        TE
                     </div>
                     <div className="flex flex-col group-data-[collapsible=icon]:hidden">
-                        <span className="text-xs font-medium">Organization</span>
-                        <span className="text-[10px] text-muted-foreground uppercase">org:admin</span>
+                        <span className="text-xs font-bold leading-none tracking-tight">TryEval</span>
+                        <span className="text-[9px] text-muted-foreground font-mono mt-1 opacity-50 uppercase font-bold">org:admin</span>
                     </div>
                 </div>
             </SidebarFooter>
