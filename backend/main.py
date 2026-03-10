@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from backend.limiter import limiter
+from fastapi.middleware.cors import CORSMiddleware
 from backend.utils.encryption import validate_primary_key
 validate_primary_key()  # Trigger startup validation
 from backend.api.org import router as org_router
@@ -21,6 +22,22 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS Configuration (TRD Section 3.1 & User Request)
+origins = [
+    os.getenv("NEXT_PUBLIC_FRONTEND_URL", "http://localhost:3000"),
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=[
+        "*",
+        "ngrok-skip-browser-warning", # Required for ngrok tunnel testing
+    ],
+)
 
 # Observability Toggle (TRD Section 7)
 if os.getenv("ENABLE_METRICS", "false").lower() == "true":
