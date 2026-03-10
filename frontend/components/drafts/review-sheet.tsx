@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { useUpdateDraftStatus } from "@/hooks/use-drafts";
 
 interface ReviewSheetProps {
     isOpen: boolean;
@@ -43,6 +44,7 @@ interface ReviewSheetProps {
 export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     const [editedText, setEditedText] = React.useState(draft.ai_draft_text);
     const [copied, setCopied] = React.useState(false);
+    const { mutate: updateStatus, isPending } = useUpdateDraftStatus();
 
     React.useEffect(() => {
         setEditedText(draft.ai_draft_text);
@@ -56,12 +58,34 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     };
 
     const handlePublish = () => {
-        const toastId = toast.loading("Publishing to Reddit...");
-        // Simulation
-        setTimeout(() => {
-            toast.success("Reply published successfully!", { id: toastId });
-            onOpenChange(false);
-        }, 1500);
+        updateStatus(
+            {
+                id: draft.id,
+                status: "PUBLISHED",
+                // Only send edited_text if it differs from the original
+                edited_text: editedText !== draft.ai_draft_text ? editedText : undefined
+            },
+            {
+                onSuccess: () => {
+                    toast.success("Reply published successfully!");
+                    onOpenChange(false);
+                },
+                onError: (error: any) => toast.error(`Failed to publish: ${error.message}`),
+            }
+        );
+    };
+
+    const handleReject = () => {
+        updateStatus(
+            { id: draft.id, status: "REJECTED" },
+            {
+                onSuccess: () => {
+                    toast.success("Draft rejected.");
+                    onOpenChange(false);
+                },
+                onError: (error: any) => toast.error(`Failed to reject: ${error.message}`),
+            }
+        );
     };
 
     return (
@@ -82,8 +106,9 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                             size="sm"
                             className="h-8 text-xs font-bold px-4"
                             onClick={handlePublish}
+                            disabled={isPending}
                         >
-                            <Send className="mr-2 h-3 w-3" /> Approve & Publish
+                            <Send className="mr-2 h-3 w-3" /> {isPending ? "Publishing..." : "Approve & Publish"}
                         </Button>
                     </div>
                 </SheetHeader>
@@ -142,6 +167,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                                 onChange={(e) => setEditedText(e.target.value)}
                                 className="h-full resize-none border-none p-0 text-sm leading-relaxed focus-visible:ring-0 bg-transparent font-medium"
                                 placeholder="Edit your response here..."
+                                disabled={isPending}
                             />
                         </div>
 
@@ -149,9 +175,18 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                             <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono font-medium">
                                 <span>Approx {editedText.split(" ").length} words • {editedText.length} chars</span>
                                 <div className="flex items-center gap-3">
-                                    <button className="hover:text-foreground">Reset Changes</button>
+                                    <button
+                                        className="hover:text-foreground disabled:opacity-50"
+                                        onClick={() => setEditedText(draft.ai_draft_text)}
+                                        disabled={isPending}
+                                    >Reset Changes</button>
                                     <Separator orientation="vertical" className="h-2" />
-                                    <button className="text-red-500 hover:text-red-400">Discard Draft</button>
+                                    <button
+                                        className="text-red-500 hover:text-red-400 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={handleReject}
+                                        disabled={isPending}
+                                    > Reject
+                                    </button>
                                 </div>
                             </div>
                         </div>
