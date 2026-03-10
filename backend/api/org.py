@@ -6,7 +6,7 @@ import os
 
 from backend.database import get_db
 from backend.models import OrgLLMConfig, OrgPersona, Organization
-from backend.schemas import LLMConfigUpdate, PersonaUpdate
+from backend.schemas import LLMConfigUpdate, PersonaUpdate, RedditAccountUpdate
 from backend.utils.tokenizer import (
     count_tokens, 
     update_persona_token_counts, 
@@ -16,15 +16,46 @@ from backend.utils.encryption import encrypt
 from backend.utils.audit import write_audit_log
 from backend.limiter import limiter
 
-router = APIRouter(prefix="/api/org", tags=["organization"])
+from backend.utils.auth import get_current_session
+from backend.models import RedditAccount
 
-# Mocking auth for now as per instructions (focus is on logic/rate limiting)
-# Teammate 2: In production, this session dictionary is populated by Clerk JWT validation.
-async def get_current_session():
-    """Fallback mock session for development."""
-    return {"org_id": 1, "user_id": 1}
+@router.get("/status")
+async def get_org_status(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Returns connectivity status for LLM providers and Reddit.
+    Used by the Vaults dashboard.
+    """
+    org_id = session["org_id"]
+    
+    # 1. Check LLM Config
+    stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
+    result = await db.execute(stmt)
+    llm_config = result.scalar_one_or_none()
+    
+    # 2. Check Reddit Account
+    stmt = select(RedditAccount).where(
+        RedditAccount.org_id == org_id,
+        RedditAccount.is_active == True,
+        RedditAccount.deleted_at == None
+    ).limit(1)
+    result = await db.execute(stmt)
+    reddit_account = result.scalar_one_or_none()
+    
+    # Determine which LLM provider is connected based on model_name or provider field
+    # For now, we assume if OrgLLMConfig exists, the primary provider is connected.
+    return {
+        "openai_connected": llm_config.provider == "openai" if llm_config else False,
+        "anthropic_connected": llm_config.provider == "anthropic" if llm_config else False,
+        "gemini_connected": llm_config.provider == "gemini" if llm_config else False,
+        "openrouter_connected": llm_config.provider == "openrouter" if llm_config else False,
+        "reddit_username": reddit_account.username if reddit_account else None,
+        "current_model": llm_config.model_name if llm_config else None,
+        "current_provider": llm_config.provider if llm_config else None
+    }
 
-@router.patch("/llm-config")
 @limiter.limit("5/minute")
 async def update_llm_config(
     payload: LLMConfigUpdate,
@@ -140,3 +171,48 @@ async def update_persona(
     
     await db.commit()
     return {"status": "success", "tokens_used": total}
+
+@router.post("/reddit")
+@limiter.limit("5/minute")
+async def save_reddit_credentials(
+    payload: RedditAccountUpdate,
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Save or update Reddit API credentials for the organization.
+    Symmetrically encrypts the secret and refresh token at rest.
+    """
+    org_id = session["org_id"]
+    
+    # 1. Fetch existing account
+    stmt = select(RedditAccount).where(
+        RedditAccount.org_id == org_id,
+        RedditAccount.deleted_at == None
+    )
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+    
+    # 2. Encrypt sensitive fields
+    encrypted_secret = encrypt(payload.client_secret)
+    encrypted_refresh = encrypt(payload.refresh_token) if payload.refresh_token else None
+    
+    if account:
+        account.username = payload.username
+        account.client_id = payload.client_id
+        account.encrypted_secret = encrypted_secret
+        account.encrypted_refresh_token = encrypted_refresh
+        account.is_active = True # Re-activate if it was inactive
+    else:
+        new_account = RedditAccount(
+            org_id=org_id,
+            username=payload.username,
+            client_id=payload.client_id,
+            encrypted_secret=encrypted_secret,
+            encrypted_refresh_token=encrypted_refresh,
+            is_active=True
+        )
+        db.add(new_account)
+    
+    await db.commit()
+    return {"status": "success", "message": "Reddit credentials saved"}

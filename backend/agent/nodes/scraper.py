@@ -1,12 +1,13 @@
 import praw
 import re
-import redis
+import redis.asyncio as redis
 import os
 from sqlalchemy.future import select
 from backend.database import SessionLocal
 from backend.models import Campaign, RedditAccount
 from backend.utils.encryption import decrypt
 from backend.agent.state import AgentState
+from backend.utils.praw_token import get_praw_token
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.from_url(REDIS_URL)
@@ -39,12 +40,13 @@ async def reddit_post_fetch(state: AgentState) -> AgentState:
             raise ValueError(f"No active Reddit account found for org {campaign.org_id}")
 
         # Initialize PRAW
-        # Note: In a production environment, we'd use the distributed lock logic from praw_token.py
-        # For fetching posts, read-only mode or direct initialization is often sufficient.
-        # We'll use the user's credentials.
+        # Node 1: Fetches a post using the distributed token lock logic (TRD 4.6)
+        token = await get_praw_token(reddit_account.id, reddit_account, redis_client)
+
         reddit = praw.Reddit(
             client_id=reddit_account.client_id,
             client_secret=decrypt(reddit_account.encrypted_secret),
+            access_token=token,
             user_agent="SentinelDevRelAgent/1.0"
         )
 

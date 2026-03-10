@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     ShieldCheck,
     Key,
@@ -8,7 +8,7 @@ import {
     CheckCircle2,
     Loader2,
     RefreshCcw,
-    Plus
+    Settings
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -18,48 +18,83 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
     useVaultStatus,
-    useSaveLLMKey,
+    useUpdateLLMConfig,
     useSaveRedditCreds
 } from "@/hooks/use-vaults";
 
+const PROVIDERS = [
+    { id: "openai", name: "OpenAI", placeholder: "sk-...", hint: "gpt-4o, gpt-4-turbo" },
+    { id: "anthropic", name: "Anthropic", placeholder: "sk-ant-...", hint: "claude-3-5-sonnet-20241022" },
+    { id: "gemini", name: "Google Gemini", placeholder: "AIza...", hint: "gemini/gemini-1.5-pro" },
+    { id: "openrouter", name: "OpenRouter", placeholder: "sk-or-...", hint: "openrouter/anthropic/claude-3.5-sonnet" },
+] as const;
+
 export default function VaultsPage() {
     const { data: status, isLoading: isLoadingStatus } = useVaultStatus();
+    const updateLLM = useUpdateLLMConfig();
+    const saveReddit = useSaveRedditCreds();
 
-    const [editingOpenAI, setEditingOpenAI] = useState(false);
-    const [editingAnthropic, setEditingAnthropic] = useState(false);
+    // UI State
+    const [editingProvider, setEditingProvider] = useState<string | null>(null);
+    const [editingModel, setEditingModel] = useState(false);
     const [editingReddit, setEditingReddit] = useState(false);
 
-    // Form states
-    const [openaiKey, setOpenaiKey] = useState("");
-    const [anthropicKey, setAnthropicKey] = useState("");
+    // Form States
+    const [apiKey, setApiKey] = useState("");
+    const [modelName, setModelName] = useState("");
 
     const [redditClientId, setRedditClientId] = useState("");
     const [redditClientSecret, setRedditClientSecret] = useState("");
     const [redditUsername, setRedditUsername] = useState("");
     const [redditPassword, setRedditPassword] = useState("");
 
-    const saveLLM = useSaveLLMKey();
-    const saveReddit = useSaveRedditCreds();
+    // Initialize model name from status
+    useEffect(() => {
+        if (status?.current_model) {
+            setModelName(status.current_model);
+        }
+    }, [status]);
 
-    const handleSaveLLM = async (provider: "openai" | "anthropic") => {
-        const api_key = provider === "openai" ? openaiKey : anthropicKey;
-        if (!api_key) {
+    const handleSaveLLM = async (provider: string) => {
+        if (!apiKey) {
             toast.error("API key is required");
             return;
         }
 
         try {
-            await saveLLM.mutateAsync({ provider, api_key });
-            toast.success(`${provider === "openai" ? "OpenAI" : "Anthropic"} key saved`);
-            if (provider === "openai") {
-                setEditingOpenAI(false);
-                setOpenaiKey("");
-            } else {
-                setEditingAnthropic(false);
-                setAnthropicKey("");
-            }
+            await updateLLM.mutateAsync({
+                provider: provider as any,
+                api_key: apiKey
+            });
+            toast.success(`${provider} configuration updated`);
+            setEditingProvider(null);
+            setApiKey("");
         } catch (err: any) {
             toast.error(err.message || "Failed to save key");
+        }
+    };
+
+    const handleUpdateModel = async () => {
+        if (!modelName) {
+            toast.error("Model name is required");
+            return;
+        }
+
+        // Regex validation for LiteLLM format: provider/model
+        if (!modelName.includes("/")) {
+            toast.error("Invalid format. Use 'provider/model' (e.g., gemini/gemini-1.5-pro)");
+            return;
+        }
+
+        try {
+            await updateLLM.mutateAsync({
+                provider: (status?.current_provider as any) || "openai",
+                model_name: modelName
+            });
+            toast.success("Active model updated");
+            setEditingModel(false);
+        } catch (err: any) {
+            toast.error(err.message || "Failed to update model");
         }
     };
 
@@ -120,143 +155,134 @@ export default function VaultsPage() {
 
                     <Separator className="bg-border/40" />
 
-                    {/* OpenAI */}
-                    <div className="flex flex-col gap-4">
+                    {/* Active Model Selection (Step 6 Implementation) */}
+                    <div className="flex flex-col gap-4 bg-primary/5 p-4 rounded-md border border-primary/10">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium">OpenAI</span>
-                                {status?.openai_connected && !editingOpenAI && (
-                                    <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px] uppercase font-mono py-0 h-4">
-                                        Connected
-                                    </Badge>
-                                )}
+                                <Settings className="h-4 w-4 text-primary" />
+                                <span className="text-sm font-medium">Global Active Model</span>
                             </div>
-                            {status?.openai_connected && !editingOpenAI ? (
+                            {!editingModel && (
                                 <Button
-                                    variant="outline"
+                                    variant="link"
                                     size="sm"
-                                    className="h-7 text-[10px] uppercase font-mono px-2"
-                                    onClick={() => setEditingOpenAI(true)}
+                                    className="h-auto p-0 text-[10px] uppercase font-mono"
+                                    onClick={() => setEditingModel(true)}
                                 >
-                                    <RefreshCcw className="mr-1 h-3 w-3" />
-                                    Update Key
+                                    Change Model
                                 </Button>
-                            ) : null}
+                            )}
                         </div>
 
-                        {(!status?.openai_connected || editingOpenAI) && (
-                            <div className="flex flex-col gap-3">
-                                <div className="flex flex-col gap-1.5">
-                                    <label htmlFor="openai-key" className="text-[10px] font-mono uppercase text-muted-foreground">
-                                        API Key
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <Input
-                                            id="openai-key"
-                                            type="password"
-                                            placeholder="sk-..."
-                                            className="h-8 text-sm font-mono shadow-none border-border/40"
-                                            value={openaiKey}
-                                            onChange={(e) => setOpenaiKey(e.target.value)}
-                                        />
-                                        <Button
-                                            size="sm"
-                                            className="h-8 px-3 text-[10px] uppercase font-mono"
-                                            onClick={() => handleSaveLLM("openai")}
-                                            disabled={saveLLM.isPending}
-                                        >
-                                            {saveLLM.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
-                                        </Button>
-                                        {editingOpenAI && (
-                                            <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                className="h-8 px-3 text-[10px] uppercase font-mono"
-                                                onClick={() => {
-                                                    setEditingOpenAI(false);
-                                                    setOpenaiKey("");
-                                                }}
-                                            >
-                                                Cancel
-                                            </Button>
-                                        )}
-                                    </div>
+                        {editingModel ? (
+                            <div className="flex flex-col gap-2">
+                                <p className="text-[10px] text-muted-foreground italic mb-1">
+                                    LiteLLM format required. Examples: <code>gemini/gemini-1.5-pro</code>, <code>openrouter/anthropic/claude-3.5-sonnet</code>
+                                </p>
+                                <div className="flex gap-2">
+                                    <Input
+                                        className="h-8 text-xs font-mono"
+                                        value={modelName}
+                                        onChange={(e) => setModelName(e.target.value)}
+                                        placeholder="provider/model-name"
+                                    />
+                                    <Button size="sm" className="h-8 text-[10px] uppercase font-mono" onClick={handleUpdateModel} disabled={updateLLM.isPending}>
+                                        Apply
+                                    </Button>
+                                    <Button variant="ghost" size="sm" className="h-8 text-[10px] uppercase font-mono" onClick={() => setEditingModel(false)}>
+                                        Cancel
+                                    </Button>
                                 </div>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2">
+                                <Badge variant="secondary" className="font-mono text-xs py-1">
+                                    {status?.current_model || "Not Configured"}
+                                </Badge>
+                                <span className="text-[10px] text-muted-foreground lowercase">
+                                    via {status?.current_provider || "N/A"}
+                                </span>
                             </div>
                         )}
                     </div>
 
-                    <Separator className="bg-border/40" />
+                    <div className="flex flex-col gap-5">
+                        {PROVIDERS.map((provider) => {
+                            const isConnected = status?.[`${provider.id}_connected` as keyof typeof status];
+                            const isEditing = editingProvider === provider.id;
 
-                    {/* Anthropic */}
-                    <div className="flex flex-col gap-4">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium">Anthropic</span>
-                                {status?.anthropic_connected && !editingAnthropic && (
-                                    <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px] uppercase font-mono py-0 h-4">
-                                        Connected
-                                    </Badge>
-                                )}
-                            </div>
-                            {status?.anthropic_connected && !editingAnthropic ? (
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-7 text-[10px] uppercase font-mono px-2"
-                                    onClick={() => setEditingAnthropic(true)}
-                                >
-                                    <RefreshCcw className="mr-1 h-3 w-3" />
-                                    Update Key
-                                </Button>
-                            ) : null}
-                        </div>
-
-                        {(!status?.anthropic_connected || editingAnthropic) && (
-                            <div className="flex flex-col gap-3">
-                                <div className="flex flex-col gap-1.5">
-                                    <label htmlFor="anthropic-key" className="text-[10px] font-mono uppercase text-muted-foreground">
-                                        API Key
-                                    </label>
-                                    <div className="flex gap-2">
-                                        <Input
-                                            id="anthropic-key"
-                                            type="password"
-                                            placeholder="sk-ant-..."
-                                            className="h-8 text-sm font-mono shadow-none border-border/40"
-                                            value={anthropicKey}
-                                            onChange={(e) => setAnthropicKey(e.target.value)}
-                                        />
-                                        <Button
-                                            size="sm"
-                                            className="h-8 px-3 text-[10px] uppercase font-mono"
-                                            onClick={() => handleSaveLLM("anthropic")}
-                                            disabled={saveLLM.isPending}
-                                        >
-                                            {saveLLM.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
-                                        </Button>
-                                        {editingAnthropic && (
+                            return (
+                                <div key={provider.id} className="flex flex-col gap-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium">{provider.name}</span>
+                                            {isConnected && !isEditing && (
+                                                <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px] uppercase font-mono py-0 h-4">
+                                                    Connected
+                                                </Badge>
+                                            )}
+                                        </div>
+                                        {isConnected && !isEditing && (
                                             <Button
-                                                variant="ghost"
+                                                variant="outline"
                                                 size="sm"
-                                                className="h-8 px-3 text-[10px] uppercase font-mono"
+                                                className="h-7 text-[10px] uppercase font-mono px-2"
                                                 onClick={() => {
-                                                    setEditingAnthropic(false);
-                                                    setAnthropicKey("");
+                                                    setEditingProvider(provider.id);
+                                                    setApiKey("");
                                                 }}
                                             >
-                                                Cancel
+                                                <RefreshCcw className="mr-1 h-3 w-3" />
+                                                Update
                                             </Button>
                                         )}
                                     </div>
+
+                                    {(isEditing || !isConnected) && (
+                                        <div className="flex flex-col gap-1.5 pl-2 border-l-2 border-primary/20 bg-muted/5 p-3 rounded-r-md">
+                                            <label className="text-[10px] font-mono uppercase text-muted-foreground">
+                                                API Key
+                                            </label>
+                                            <div className="flex gap-2">
+                                                <Input
+                                                    type="password"
+                                                    placeholder={provider.placeholder}
+                                                    className="h-8 text-sm font-mono shadow-none border-border/40"
+                                                    value={apiKey}
+                                                    onChange={(e) => setApiKey(e.target.value)}
+                                                />
+                                                <Button
+                                                    size="sm"
+                                                    className="h-8 px-3 text-[10px] uppercase font-mono"
+                                                    onClick={() => handleSaveLLM(provider.id)}
+                                                    disabled={updateLLM.isPending}
+                                                >
+                                                    {updateLLM.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                                                </Button>
+                                                {isEditing && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="h-8 px-3 text-[10px] uppercase font-mono"
+                                                        onClick={() => setEditingProvider(null)}
+                                                    >
+                                                        Cancel
+                                                    </Button>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-muted-foreground mt-1">
+                                                Safe fallback: {provider.hint}
+                                            </p>
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
-                        )}
+                            );
+                        })}
                     </div>
                 </div>
 
                 {/* Section B: Reddit Credentials */}
-                <div className="flex flex-col gap-6 border border-border/40 bg-muted/10 rounded-md p-6 shadow-none">
+                <div className="flex flex-col gap-6 border border-border/40 bg-muted/10 rounded-md p-6 shadow-none self-start">
                     <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2">
                             <Bot className="h-4 w-4 text-muted-foreground" />
@@ -284,13 +310,13 @@ export default function VaultsPage() {
                                     onClick={() => setEditingReddit(true)}
                                 >
                                     <RefreshCcw className="mr-1 h-3 w-3" />
-                                    Update Credentials
+                                    Update
                                 </Button>
                             ) : null}
                         </div>
 
                         {(!status?.reddit_username || editingReddit) && (
-                            <div className="grid grid-cols-1 gap-4 mt-2">
+                            <div className="grid grid-cols-1 gap-4 mt-2 bg-muted/5 p-4 rounded-md border border-border/40">
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="flex flex-col gap-1.5">
                                         <label className="text-[10px] font-mono uppercase text-muted-foreground">

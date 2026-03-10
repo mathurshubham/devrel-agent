@@ -17,7 +17,7 @@ from backend.models import (
 from backend.agent.graph import app
 from backend.utils.audit import write_audit_log
 from backend.utils.encryption import decrypt
-from backend.utils.praw_token import get_praw_token, _refresh_praw_token_mock
+from backend.utils.praw_token import get_praw_token
 
 logger = logging.getLogger(__name__)
 
@@ -50,43 +50,93 @@ async def _get_account_rate_limit(account_id: int) -> bool:
 def scraper_task(self, campaign_id: int):
     """
     Scraper task: Fetches Reddit posts and dispatches LangGen.
-    Executes Node 1 & 2 of the pipeline.
+    Executes Node 1 & 2 of the pipeline logic.
     """
-    from backend.agent.nodes.scraper import reddit_post_fetch, keyword_matcher
+    from backend.agent.nodes.scraper import keyword_matcher, reddit_post_fetch
+    import praw # Import inside task to avoid top-level overhead
     
     async def _run():
         logger.info(f"Running scraper_task for campaign {campaign_id}")
         
-        # Scaffolding: In a real scenario, this task would fetch a list of post IDs.
-        # Here we model the handoff to the LangGraph Nodes 1 & 2.
-        post_id = "test_post_cid" # Placeholder ID for demonstration
-        
-        initial_state = {
-            "campaign_id": campaign_id,
-            "reddit_post_id": post_id,
-            "post_url": "",
-            "original_text": "",
-            "matched_keywords": [],
-            "pre_filter_pass": False,
-            "confidence_score": 0.0,
-            "triage_reasoning": "",
-            "truncation_applied": False,
-            "truncation_details": {},
-            "ai_draft_text": "",
-            "model_payload_token_count": 0,
-            "final_status": DraftStatus.PENDING
-        }
-        
-        # Step 1: Fetch (Node 1)
-        state = await reddit_post_fetch(initial_state)
-        # Step 2: Match (Node 2)
-        state = await keyword_matcher(state)
-        
-        if state["pre_filter_pass"]:
-            logger.info(f"Keyword match for campaign {campaign_id}, post {post_id}. Handoff to langgen.")
-            celery_app.send_task("tasks.workers.langgen_task", args=[state])
-        else:
-            logger.info(f"Post {post_id} did not pass filters.")
+        async with SessionLocal() as db:
+            # 1. Fetch Campaign and active Reddit Account
+            campaign = await db.get(Campaign, campaign_id)
+            if not campaign or campaign.status != CampaignStatus.ACTIVE:
+                logger.warning(f"Campaign {campaign_id} not found or inactive.")
+                return
+
+            result = await db.execute(
+                select(RedditAccount).where(
+                    RedditAccount.org_id == campaign.org_id,
+                    RedditAccount.is_active == True,
+                    RedditAccount.deleted_at == None
+                ).limit(1)
+            )
+            account = result.scalar_one_or_none()
+            if not account:
+                logger.error(f"No active Reddit account for org {campaign.org_id}")
+                return
+
+            # 2. Get Access Token (Async Step 3/4)
+            token = await get_praw_token(account.id, account, redis_client)
+            
+            # 3. Initialize PRAW (Read-only/OAuth)
+            reddit = praw.Reddit(
+                client_id=account.client_id,
+                client_secret=decrypt(account.encrypted_secret),
+                access_token=token,
+                user_agent="SentinelDevRelAgent/1.0"
+            )
+
+            # 4. Fetch Top N posts from subreddit
+            subreddit = reddit.subreddit(campaign.subreddit_name)
+            # Use post_fetch_limit (or default to 10 if not set)
+            limit = getattr(campaign, 'post_fetch_limit', 10)
+            
+            new_posts_found = 0
+            for submission in subreddit.new(limit=limit):
+                post_id = submission.id
+                
+                # 5. Idempotency Check (TRD 4.5)
+                # Check if we already have a draft for this post in this campaign
+                stmt = select(DraftReply).where(
+                    DraftReply.campaign_id == campaign_id,
+                    DraftReply.reddit_post_id == post_id
+                )
+                existing = await db.execute(stmt)
+                if existing.scalar_one_or_none():
+                    continue
+
+                # 6. Basic Triage (Execute Node 1 & 2 logic)
+                # We reuse the node functions by passing the partial state
+                initial_state = {
+                    "campaign_id": campaign_id,
+                    "reddit_post_id": post_id,
+                    "post_url": f"https://reddit.com{submission.permalink}",
+                    "original_text": f"Title: {submission.title}\n\n{submission.selftext}",
+                    "matched_keywords": [],
+                    "pre_filter_pass": False,
+                    "confidence_score": 0.0,
+                    "triage_reasoning": "",
+                    "truncation_applied": False,
+                    "truncation_details": {},
+                    "ai_draft_text": "",
+                    "model_payload_token_count": 0,
+                    "final_status": DraftStatus.PENDING
+                }
+                
+                # Check for keyword matches immediately (Node 2 logic)
+                state = await keyword_matcher(initial_state)
+                
+                if state["pre_filter_pass"]:
+                    logger.info(f"Keyword match for campaign {campaign_id}, post {post_id}. Handoff to langgen.")
+                    # Dispatch langgen_task
+                    celery_app.send_task("tasks.workers.langgen_task", args=[state])
+                    new_posts_found += 1
+                else:
+                    logger.debug(f"Post {post_id} skipped (no keyword match).")
+
+            logger.info(f"Scraper finished for campaign {campaign_id}. Dispatched {new_posts_found} tasks.")
 
     asyncio.run(_run())
 
@@ -169,10 +219,8 @@ def praw_publish_task(self, draft_id: int):
                     self.retry(countdown=2)
                     return
 
-                # 3. Publish Execution (Simulation)
-                # Ensure PRAW distributed lock handles token refresh
-                # In real code: await refresh_praw_token(account)
-                token = get_praw_token(account.id, account, redis_client, _refresh_praw_token_mock)
+                # 3. Publish Execution
+                token = await get_praw_token(account.id, account, redis_client)
                 logger.info(f"Publishing reply via account {account.username}")
                 
                 # Simulation result

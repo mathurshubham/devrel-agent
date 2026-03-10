@@ -165,6 +165,7 @@ class RedditAccount(Base):
     username                   : Mapped[str]  = mapped_column(String(100), nullable=False)
     client_id                  : Mapped[str]  = mapped_column(String(255), nullable=False)
     encrypted_secret           : Mapped[str]  = mapped_column(Text, nullable=False)         # Text — not String(500)
+    encrypted_refresh_token    : Mapped[Optional[str]] = mapped_column(Text) # NEW: Long-lived OAuth refresh token
     encrypted_with_key_version : Mapped[int]  = mapped_column(Integer, default=1)
 
     is_shared_with_team : Mapped[bool]              = mapped_column(Boolean, default=True)
@@ -228,6 +229,7 @@ class Campaign(Base):
 
     # Comment depth configuration
     comment_fetch_limit : Mapped[int]  = mapped_column(Integer, default=10)
+    post_fetch_limit    : Mapped[int]  = mapped_column(Integer, default=10) # NEW: Max posts to scan per poll
     include_op_context  : Mapped[bool] = mapped_column(Boolean, default=True)
     max_comment_chars   : Mapped[int]  = mapped_column(Integer, default=500)
 

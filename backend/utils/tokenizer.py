@@ -32,10 +32,12 @@ def compute_token_budget(model: str, persona: OrgPersona, safety_reserve: int = 
     Calculates remaining token budget for Reddit posts/comments.
     Formula: Max Tokens - (Master Context + Rulesets + Safety Reserve)
     """
-    limit = litellm.get_max_tokens(model)
-    # Ensure limit is an int
-    if not isinstance(limit, int):
-        # Fallback for models without hard limits in litellm data
-        limit = 4096 
+    try:
+        limit = litellm.get_max_tokens(model)
+        # If LiteLLM returns None or something non-integer, use your high-capacity fallback
+        if not isinstance(limit, int):
+            limit = 16384 
+    except Exception:
+        limit = 16384
         
     return limit - persona.master_context_tokens - persona.rulesets_token_count - safety_reserve
