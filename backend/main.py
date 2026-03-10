@@ -8,6 +8,9 @@ from backend.api.org import router as org_router
 from backend.api.webhooks import router as webhooks_router
 from backend.api.export import router as export_router
 from backend.api.safety import router as safety_router
+from backend.api.campaigns import router as campaigns_router
+from backend.api.inbox import router as inbox_router
+from backend.api.prompts import router as prompts_router
 
 app = FastAPI(
     title="Sentinel / TryEval OSS DevRel AI Agent",
@@ -21,6 +24,9 @@ app.include_router(org_router)
 app.include_router(webhooks_router, prefix="/api/webhooks", tags=["Webhooks"])
 app.include_router(export_router, prefix="/api")
 app.include_router(safety_router)
+app.include_router(campaigns_router)
+app.include_router(inbox_router)
+app.include_router(prompts_router)
 
 @app.get("/health")
 @limiter.limit("60/minute")

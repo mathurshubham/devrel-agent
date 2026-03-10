@@ -1,56 +1,77 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-interface Draft {
-    id: string;
+export interface Draft {
+    id: number;
+    campaign_id: number;
     status: string;
     subreddit: string;
-    confidence: number;
-    reasoning: string[];
+    confidence_score: number;
+    triage_reasoning: string;
     post_title: string;
     original_text: string;
     ai_draft_text: string;
+    reddit_post_url: string;
     model_used: string;
-    prompt_version: string;
+    prompt_template_version: string;
     created_at: string;
+    locked_by_user_id?: number;
+    locked_at?: string;
 }
 
-interface UpdateDraftPayload {
-    id: string;
-    status: "PUBLISHED" | "REJECTED";
-    edited_text?: string;
-}
-
-export function useDrafts(searchQuery?: string) {
+export function useDrafts(status?: string, campaignId?: number) {
     return useQuery({
-        queryKey: ["drafts", searchQuery],
+        queryKey: ["drafts", status, campaignId],
         queryFn: async (): Promise<Draft[]> => {
-            const url = searchQuery
-                ? `/api/drafts?q=${encodeURIComponent(searchQuery)}`
-                : '/api/drafts';
+            let url = "/api/inbox/drafts";
+            const params = new URLSearchParams();
+            if (status) params.append("status", status);
+            if (campaignId) params.append("campaign_id", campaignId.toString());
+
+            if (params.toString()) {
+                url += `?${params.toString()}`;
+            }
+
             const res = await fetch(url);
             if (!res.ok) throw new Error("Failed to fetch drafts");
             return res.json();
         },
-        // Keeps the current table visible while fetching search results!
         placeholderData: (previousData) => previousData,
     });
 }
 
-export function useUpdateDraftStatus() {
+export function useLockDraft() {
+    return useMutation({
+        mutationFn: async (id: number) => {
+            const res = await fetch(`/api/inbox/drafts/${id}/lock`, { method: "POST" });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Failed to lock draft");
+            }
+            return res.json();
+        }
+    });
+}
+
+export function useApproveDraft() {
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id, status, edited_text }: UpdateDraftPayload) => {
-            const payload: any = { status };
-            if (edited_text !== undefined) {
-                payload.edited_text = edited_text;
-            }
+        mutationFn: async (id: number) => {
+            const res = await fetch(`/api/inbox/drafts/${id}/approve`, { method: "POST" });
+            if (!res.ok) throw new Error("Failed to approve draft");
+            return res.json();
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["drafts"] });
+        }
+    });
+}
 
-            const res = await fetch(`/api/drafts/${id}/status`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-            if (!res.ok) throw new Error("Failed to update status");
+export function useRejectDraft() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (id: number) => {
+            const res = await fetch(`/api/inbox/drafts/${id}/reject`, { method: "POST" });
+            if (!res.ok) throw new Error("Failed to reject draft");
             return res.json();
         },
         onSuccess: () => {

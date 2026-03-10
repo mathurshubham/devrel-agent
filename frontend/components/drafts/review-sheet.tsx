@@ -11,7 +11,9 @@ import {
     MessageSquare,
     Zap,
     Copy,
-    Check
+    Check,
+    ShieldAlert,
+    BrainCircuit
 } from "lucide-react";
 import {
     Sheet,
@@ -23,32 +25,61 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+    PopoverHeader,
+    PopoverTitle,
+} from "@/components/ui/popover";
 import { toast } from "sonner";
-import { useUpdateDraftStatus } from "@/hooks/use-drafts";
+import { useApproveDraft, useRejectDraft, useLockDraft, Draft } from "@/hooks/use-drafts";
 
 interface ReviewSheetProps {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    draft: {
-        id: string;
-        post_title: string;
-        subreddit: string;
-        confidence: number;
-        original_text: string;
-        ai_draft_text: string;
-        model_used: string;
-        prompt_version: string;
-    };
+    draft: Draft;
 }
 
 export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     const [editedText, setEditedText] = React.useState(draft.ai_draft_text);
     const [copied, setCopied] = React.useState(false);
-    const { mutate: updateStatus, isPending } = useUpdateDraftStatus();
+
+    const { mutate: approve, isPending: isApproving } = useApproveDraft();
+    const { mutate: reject, isPending: isRejecting } = useRejectDraft();
+    const { mutate: lock } = useLockDraft();
+
+    const isPending = isApproving || isRejecting;
 
     React.useEffect(() => {
         setEditedText(draft.ai_draft_text);
-    }, [draft]);
+        if (isOpen && draft.id) {
+            lock(draft.id);
+        }
+    }, [draft, isOpen]);
+
+    // Keyboard Shortcuts (Section 11)
+    React.useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (!isOpen || isPending) return;
+
+            // Avoid triggering when typing in the textarea
+            if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
+                return;
+            }
+
+            if (e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                handlePublish();
+            } else if (e.key.toLowerCase() === 'r') {
+                e.preventDefault();
+                handleReject();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, isPending, editedText]);
 
     const handleCopy = () => {
         navigator.clipboard.writeText(editedText);
@@ -58,35 +89,26 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     };
 
     const handlePublish = () => {
-        updateStatus(
-            {
-                id: draft.id,
-                status: "PUBLISHED",
-                // Only send edited_text if it differs from the original
-                edited_text: editedText !== draft.ai_draft_text ? editedText : undefined
+        approve(draft.id, {
+            onSuccess: () => {
+                toast.success("Reply approved and queued!");
+                onOpenChange(false);
             },
-            {
-                onSuccess: () => {
-                    toast.success("Reply published successfully!");
-                    onOpenChange(false);
-                },
-                onError: (error: any) => toast.error(`Failed to publish: ${error.message}`),
-            }
-        );
+            onError: (error: any) => toast.error(`Approval failed: ${error.message}`),
+        });
     };
 
     const handleReject = () => {
-        updateStatus(
-            { id: draft.id, status: "REJECTED" },
-            {
-                onSuccess: () => {
-                    toast.success("Draft rejected.");
-                    onOpenChange(false);
-                },
-                onError: (error: any) => toast.error(`Failed to reject: ${error.message}`),
-            }
-        );
+        reject(draft.id, {
+            onSuccess: () => {
+                toast.success("Draft discarded.");
+                onOpenChange(false);
+            },
+            onError: (error: any) => toast.error(`Rejection failed: ${error.message}`),
+        });
     };
+
+    const isSafetyOverride = draft.confidence_score >= 0.9 && draft.status === "PENDING"; // Simplified check for badge demonstration
 
     return (
         <Sheet open={isOpen} onOpenChange={onOpenChange}>
@@ -95,6 +117,12 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                     <div className="flex items-center gap-3">
                         <SheetTitle className="text-sm font-bold tracking-tight">Review AI Draft</SheetTitle>
                         <Badge variant="outline" className="font-mono text-[9px] h-4 leading-none opacity-50 px-1">{draft.id}</Badge>
+
+                        {isSafetyOverride && (
+                            <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[9px] font-bold py-0 h-4">
+                                <ShieldAlert className="mr-1 h-3 w-3" /> SAFETY OVERRIDE
+                            </Badge>
+                        )}
                     </div>
                     <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1.5 mr-2">
@@ -104,11 +132,13 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                         <Button
                             variant="default"
                             size="sm"
-                            className="h-8 text-xs font-bold px-4"
+                            className="h-8 text-xs font-bold px-4 group/btn"
                             onClick={handlePublish}
                             disabled={isPending}
                         >
-                            <Send className="mr-2 h-3 w-3" /> {isPending ? "Publishing..." : "Approve & Publish"}
+                            <Send className="mr-2 h-3 w-3 group-hover/btn:translate-x-0.5 transition-transform" />
+                            {isApproving ? "Queueing..." : "Approve & Publish"}
+                            <span className="ml-2 opacity-30 text-[10px] hidden sm:inline">[A]</span>
                         </Button>
                     </div>
                 </SheetHeader>
@@ -121,14 +151,14 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                                 <h3 className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                                     <MessageSquare className="h-3 w-3" /> Reddit Context
                                 </h3>
-                                <a href="#" className="text-[10px] text-primary hover:underline flex items-center gap-1 font-medium">
+                                <a href={draft.reddit_post_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-primary hover:underline flex items-center gap-1 font-medium">
                                     Open Post <ExternalLink className="h-2.5 w-2.5" />
                                 </a>
                             </div>
                             <div className="rounded border border-border/40 bg-background p-4 relative overflow-hidden group">
                                 <div className="absolute top-0 left-0 w-1 h-full bg-primary/20" />
                                 <h4 className="text-sm font-bold mb-3 leading-snug">{draft.post_title}</h4>
-                                <blockquote className="text-sm text-foreground/80 font-medium leading-relaxed italic border-l-2 border-primary/10 pl-4 py-1">
+                                <blockquote className="text-sm text-foreground/80 font-medium leading-relaxed italic border-l-2 border-primary/10 pl-4 py-1 whitespace-pre-wrap">
                                     {draft.original_text}
                                 </blockquote>
                             </div>
@@ -140,12 +170,33 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                             </h3>
                             <div className="grid grid-cols-2 gap-2">
                                 <div className="rounded border border-border/40 bg-background p-3">
-                                    <span className="text-[9px] font-mono uppercase text-muted-foreground block mb-1">Prompt Template</span>
-                                    <span className="text-xs font-bold font-mono">{draft.prompt_version}</span>
+                                    <span className="text-[9px] font-mono uppercase text-muted-foreground block mb-1">Prompt Version</span>
+                                    <span className="text-xs font-bold font-mono">{draft.prompt_template_version}</span>
                                 </div>
-                                <div className="rounded border border-border/40 bg-background p-3">
-                                    <span className="text-[9px] font-mono uppercase text-muted-foreground block mb-1">Inferred Intent</span>
-                                    <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-[9px] py-0 h-4 font-bold">HIGH MATCH</Badge>
+                                <div className="rounded border border-border/40 bg-background p-3 relative group">
+                                    <span className="text-[9px] font-mono uppercase text-muted-foreground block mb-1">Confidence</span>
+
+                                    <Popover>
+                                        <PopoverTrigger>
+                                            <div className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity">
+                                                <Badge className={`${draft.confidence_score > 0.8 ? "bg-green-500/10 text-green-500" : "bg-amber-500/10 text-amber-500"} border-transparent text-[11px] font-bold h-5`}>
+                                                    {(draft.confidence_score * 100).toFixed(0)}%
+                                                </Badge>
+                                                <Info className="h-3 w-3 text-muted-foreground opacity-30" />
+                                            </div>
+                                        </PopoverTrigger>
+                                        <PopoverContent className="w-80">
+                                            <PopoverHeader>
+                                                <PopoverTitle className="text-xs font-bold flex items-center gap-2">
+                                                    <BrainCircuit className="h-3.5 w-3.5 text-primary" />
+                                                    Triage Reasoning
+                                                </PopoverTitle>
+                                            </PopoverHeader>
+                                            <div className="text-xs leading-relaxed text-muted-foreground p-1 font-medium italic">
+                                                "{draft.triage_reasoning || "No detailed reasoning available for this generation."}"
+                                            </div>
+                                        </PopoverContent>
+                                    </Popover>
                                 </div>
                             </div>
                         </section>
@@ -173,19 +224,21 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
 
                         <div className="pt-4 border-t border-border/40">
                             <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono font-medium">
-                                <span>Approx {editedText.split(" ").length} words • {editedText.length} chars</span>
+                                <span>{editedText.length} chars</span>
                                 <div className="flex items-center gap-3">
                                     <button
                                         className="hover:text-foreground disabled:opacity-50"
                                         onClick={() => setEditedText(draft.ai_draft_text)}
                                         disabled={isPending}
-                                    >Reset Changes</button>
+                                    >Reset</button>
                                     <Separator orientation="vertical" className="h-2" />
                                     <button
-                                        className="text-red-500 hover:text-red-400 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="text-red-500 hover:text-red-400 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed group/rej"
                                         onClick={handleReject}
                                         disabled={isPending}
-                                    > Reject
+                                    >
+                                        {isRejecting ? "Discarding..." : "Reject"}
+                                        <span className="opacity-30 group-hover/rej:opacity-100 transition-opacity ml-1">[R]</span>
                                     </button>
                                 </div>
                             </div>
