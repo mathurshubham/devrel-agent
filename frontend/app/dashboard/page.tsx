@@ -133,12 +133,14 @@ export default function DashboardPage() {
                                     </TableCell>
                                     <TableCell>
                                         <Popover>
-                                            <PopoverTrigger asChild>
-                                                <Badge className={`cursor-pointer border ${getConfidenceColor(draft.confidence_score)}`}>
-                                                    {(draft.confidence_score * 100).toFixed(0)}%
-                                                    <Info className="ml-1 h-3 w-3 opacity-50" />
-                                                </Badge>
-                                            </PopoverTrigger>
+                                            <PopoverTrigger
+                                                render={
+                                                    <Badge className={`cursor-pointer border ${getConfidenceColor(draft.confidence_score)}`}>
+                                                        {(draft.confidence_score * 100).toFixed(0)}%
+                                                        <Info className="ml-1 h-3 w-3 opacity-50" />
+                                                    </Badge>
+                                                }
+                                            />
                                             <PopoverContent className="w-80 p-4">
                                                 <div className="space-y-2">
                                                     <h4 className="font-medium leading-none">Triage Reasoning</h4>
@@ -156,11 +158,13 @@ export default function DashboardPage() {
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <Sheet>
-                                            <SheetTrigger asChild>
-                                                <button className="inline-flex h-8 items-center justify-center rounded-md border border-border/40 px-3 text-sm font-medium hover:bg-muted transition-colors">
-                                                    Review <ChevronRight className="ml-1 h-4 w-4" />
-                                                </button>
-                                            </SheetTrigger>
+                                            <SheetTrigger
+                                                render={
+                                                    <button className="inline-flex h-8 items-center justify-center rounded-md border border-border/40 px-3 text-sm font-medium hover:bg-muted transition-colors">
+                                                        Review <ChevronRight className="ml-1 h-4 w-4" />
+                                                    </button>
+                                                }
+                                            />
                                             <SheetContent className="sm:max-w-[800px] p-0" side="right">
                                                 <DraftReview draft={draft} />
                                             </SheetContent>

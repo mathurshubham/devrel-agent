@@ -88,15 +88,15 @@ export function AppSidebar() {
                             {items.map((item) => (
                                 <SidebarMenuItem key={item.title}>
                                     <SidebarMenuButton
-                                        asChild
                                         tooltip={item.title}
                                         className="hover:bg-zinc-900 transition-none rounded-none border-l-2 border-transparent data-[active=true]:border-primary data-[active=true]:bg-zinc-900"
-                                    >
-                                        <a href={item.url} className="flex items-center gap-3 px-3 py-2">
-                                            <item.icon className="h-4 w-4 opacity-70" />
-                                            <span className="text-xs font-medium tracking-tight group-data-[collapsible=icon]:hidden">{item.title}</span>
-                                        </a>
-                                    </SidebarMenuButton>
+                                        render={
+                                            <a href={item.url} className="flex items-center gap-3 px-3 py-2">
+                                                <item.icon className="h-4 w-4 opacity-70" />
+                                                <span className="text-xs font-medium tracking-tight group-data-[collapsible=icon]:hidden">{item.title}</span>
+                                            </a>
+                                        }
+                                    />
                                 </SidebarMenuItem>
                             ))}
                         </SidebarMenu>

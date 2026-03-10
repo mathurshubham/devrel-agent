@@ -156,8 +156,8 @@ export default function DraftInboxPage() {
                             <TableHead className="w-[40px] px-6">
                                 <Checkbox
                                     checked={selectedDrafts.length === drafts.length}
-                                    onCheckedChange={(checked) => {
-                                        if (checked) setSelectedDrafts(drafts.map(d => d.id));
+                                    onCheckedChange={(checked: boolean | "indeterminate") => {
+                                        if (checked === true) setSelectedDrafts(drafts.map(d => d.id));
                                         else setSelectedDrafts([]);
                                     }}
                                 />
@@ -199,18 +199,21 @@ export default function DraftInboxPage() {
                                 </TableCell>
                                 <TableCell>
                                     <Popover>
-                                        <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
-                                            <div className="flex items-center gap-2 cursor-help">
-                                                <div className="w-16">
-                                                    <Progress value={draft.confidence * 100} className="h-1 bg-muted" />
-                                                </div>
-                                                <span className={`text-[10px] font-bold font-mono ${draft.confidence > 0.85 ? "text-green-500" :
+                                        <PopoverTrigger
+                                            onClick={(e) => e.stopPropagation()}
+                                            render={
+                                                <div className="flex items-center gap-2 cursor-help">
+                                                    <div className="w-16">
+                                                        <Progress value={draft.confidence * 100} className="h-1 bg-muted" />
+                                                    </div>
+                                                    <span className={`text-[10px] font-bold font-mono ${draft.confidence > 0.85 ? "text-green-500" :
                                                         draft.confidence > 0.5 ? "text-amber-500" : "text-red-500"
-                                                    }`}>
-                                                    {(draft.confidence * 100).toFixed(0)}%
-                                                </span>
-                                            </div>
-                                        </PopoverTrigger>
+                                                        }`}>
+                                                        {(draft.confidence * 100).toFixed(0)}%
+                                                    </span>
+                                                </div>
+                                            }
+                                        />
                                         <PopoverContent className="w-64 p-3 border-border/40 bg-background/95 backdrop-blur" side="top">
                                             <div className="space-y-2">
                                                 <h4 className="text-[10px] font-mono tracking-widest uppercase text-muted-foreground">Triage Reasoning</h4>

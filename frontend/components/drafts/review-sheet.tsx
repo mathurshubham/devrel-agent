@@ -78,7 +78,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                             <Badge variant="secondary" className="text-[10px] py-0 h-4 font-mono px-1.5">{draft.model_used}</Badge>
                         </div>
                         <Button
-                            variant="primary"
+                            variant="default"
                             size="sm"
                             className="h-8 text-xs font-bold px-4"
                             onClick={handlePublish}
