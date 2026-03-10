@@ -7,7 +7,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { AppSidebar } from "@/components/app-sidebar";
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
-import { GlobalCommandPalette } from "@/components/global-command";
+import { CommandPalette } from "@/components/nav/command-palette";
 import { Toaster } from "@/components/ui/sonner";
 
 const geistSans = Geist({
@@ -70,7 +70,7 @@ export default function RootLayout({
                   {children}
                 </main>
               </SidebarInset>
-              <GlobalCommandPalette />
+              <CommandPalette />
               <Toaster position="bottom-right" />
             </SidebarProvider>
           </TooltipProvider>
