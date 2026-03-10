@@ -198,16 +198,16 @@ export default function PromptsPage() {
                                     <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
                                         <div className="space-y-1">
                                             <CardTitle className="text-xs font-bold uppercase tracking-tight flex items-center gap-2">
-                                                {prompt.name}
-                                                {prompt.is_system && (
+                                                {prompt.title}
+                                                {prompt.is_system_default && (
                                                     <Badge variant="outline" className="text-[9px] font-bold h-4 border-primary/20 bg-primary/5 text-primary">SYSTEM</Badge>
                                                 )}
                                             </CardTitle>
-                                            <CardDescription className="text-[10px] font-mono">v{prompt.version} • {prompt.model}</CardDescription>
+                                            <CardDescription className="text-[10px] font-mono">v{prompt.version}</CardDescription>
                                         </div>
                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <Button variant="ghost" size="icon" className="h-7 w-7"><History className="h-3 w-3" /></Button>
-                                            {!prompt.is_system && (
+                                            {!prompt.is_system_default && (
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
@@ -221,14 +221,14 @@ export default function PromptsPage() {
                                     </CardHeader>
                                     <CardContent className="pb-4">
                                         <Textarea
-                                            defaultValue={prompt.template}
+                                            defaultValue={prompt.prompt_body}
                                             className="text-[11px] font-mono leading-relaxed h-[120px] bg-background/50 border-border/20 resize-none"
-                                            readOnly={prompt.is_system}
+                                            readOnly={prompt.is_system_default}
                                         />
                                     </CardContent>
                                     <CardFooter className="pt-0 border-t border-border/10 mt-2 py-3 flex justify-between bg-muted/20">
-                                        <span className="text-[9px] font-mono text-muted-foreground">Updated {new Date(prompt.updated_at).toLocaleDateString()}</span>
-                                        {!prompt.is_system && (
+                                        <span className="text-[9px] font-mono text-muted-foreground">Version {prompt.version}</span>
+                                        {!prompt.is_system_default && (
                                             <Button variant="ghost" size="sm" className="h-6 text-[9px] font-bold uppercase">Update</Button>
                                         )}
                                     </CardFooter>

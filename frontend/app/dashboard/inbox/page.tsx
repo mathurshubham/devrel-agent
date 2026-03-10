@@ -35,21 +35,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ReviewSheet } from "@/components/drafts/review-sheet";
-import { useDrafts } from "@/hooks/use-drafts";
-
-interface Draft {
-    id: string;
-    status: string;
-    subreddit: string;
-    confidence: number;
-    reasoning: string[];
-    post_title: string;
-    original_text: string;
-    ai_draft_text: string;
-    model_used: string;
-    prompt_version: string;
-    created_at: string;
-}
+import { useDrafts, Draft } from "@/hooks/use-drafts";
 
 // Mock data based on TRD
 const drafts = [
@@ -104,9 +90,9 @@ const StatusBadge = ({ status }: { status: string }) => {
 };
 
 export default function DraftInboxPage() {
-    const [selectedDrafts, setSelectedDrafts] = React.useState<string[]>([]);
+    const [selectedDrafts, setSelectedDrafts] = React.useState<number[]>([]);
     const [isSheetOpen, setIsSheetOpen] = React.useState(false);
-    const [activeDraft, setActiveDraft] = React.useState<any>(null);
+    const [activeDraft, setActiveDraft] = React.useState<Draft | null>(null);
     const [searchInput, setSearchInput] = React.useState("");
     const [debouncedSearch, setDebouncedSearch] = React.useState("");
 
@@ -117,7 +103,7 @@ export default function DraftInboxPage() {
 
     const { data: drafts = [], isLoading } = useDrafts(debouncedSearch);
 
-    const toggleSelect = (id: string) => {
+    const toggleSelect = (id: number) => {
         setSelectedDrafts(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
     };
 
@@ -207,9 +193,9 @@ export default function DraftInboxPage() {
                                         <Popover>
                                             <PopoverTrigger>
                                                 <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-2 cursor-help">
-                                                    <div className="w-16"><Progress value={draft.confidence * 100} className="h-1 bg-muted" /></div>
-                                                    <span className={`text-[10px] font-bold font-mono ${draft.confidence > 0.85 ? "text-green-500" : draft.confidence > 0.5 ? "text-amber-500" : "text-red-500"}`}>
-                                                        {(draft.confidence * 100).toFixed(0)}%
+                                                    <div className="w-16"><Progress value={(draft.confidence_score || 0) * 100} className="h-1 bg-muted" /></div>
+                                                    <span className={`text-[10px] font-bold font-mono ${draft.confidence_score > 0.85 ? "text-green-500" : draft.confidence_score > 0.5 ? "text-amber-500" : "text-red-500"}`}>
+                                                        {((draft.confidence_score || 0) * 100).toFixed(0)}%
                                                     </span>
                                                 </div>
                                             </PopoverTrigger>
@@ -217,7 +203,7 @@ export default function DraftInboxPage() {
                                                 <div className="space-y-2">
                                                     <h4 className="text-[10px] font-mono tracking-widest uppercase text-muted-foreground">Triage Reasoning</h4>
                                                     <ul className="space-y-1">
-                                                        {draft.reasoning.map((r: string, i: number) => (
+                                                        {draft.triage_reasoning?.split('\n').map((r: string, i: number) => (
                                                             <li key={i} className="text-xs flex items-center gap-2">
                                                                 <div className="h-1 w-1 rounded-full bg-primary" />{r}
                                                             </li>
