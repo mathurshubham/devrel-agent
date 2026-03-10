@@ -3,7 +3,7 @@ import logging
 import os
 import time
 import redis.asyncio as redis
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 
 from sqlalchemy import select, update
@@ -310,3 +310,35 @@ def praw_delete(self, draft_id: int):
             logger.info(f"Kill Switch success for draft {draft_id}")
 
     asyncio.run(_delete())
+@celery_app.task(name="tasks.workers.clear_expired_locks", bind=True, queue="maintenance")
+def clear_expired_locks(self):
+    """
+    Maintenance task: Clears draft locks older than 15 minutes.
+    Adheres to TRD Section 5.6.
+    """
+    async def _clear():
+        logger.info("Running clear_expired_locks maintenance task")
+        now = datetime.now(timezone.utc)
+        
+        async with SessionLocal() as db:
+            # 15 minutes = 900 seconds
+            expiry_threshold = now - timedelta(minutes=15)
+            
+            stmt = update(DraftReply).where(
+                DraftReply.locked_at != None,
+                DraftReply.locked_at < expiry_threshold
+            ).values(
+                locked_by_user_id=None,
+                locked_at=None
+            )
+            
+            result = await db.execute(stmt)
+            await db.commit()
+            
+            rows_cleared = result.rowcount
+            if rows_cleared > 0:
+                logger.info(f"Cleared {rows_cleared} expired draft locks.")
+            else:
+                logger.debug("No expired draft locks to clear.")
+
+    asyncio.run(_clear())

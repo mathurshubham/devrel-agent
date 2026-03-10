@@ -38,6 +38,10 @@ celery_app.conf.update(
             "task": "tasks.scheduler.scheduler_tick",
             "schedule": 60.0,
         },
+        "clear-locks-5m": {
+            "task": "tasks.workers.clear_expired_locks",
+            "schedule": 300.0, # 5 minutes
+        },
     },
 )
 
