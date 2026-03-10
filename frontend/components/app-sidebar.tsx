@@ -10,7 +10,8 @@ import {
     LayoutDashboard,
     ChevronRight,
     MoreHorizontal,
-    Plus
+    Plus,
+    BookOpen
 } from "lucide-react";
 
 import {
@@ -51,6 +52,11 @@ const items = [
         title: "Draft Inbox",
         url: "/dashboard/inbox",
         icon: Inbox,
+    },
+    {
+        title: "Prompt Library",
+        url: "/dashboard/prompts",
+        icon: BookOpen,
     },
     {
         title: "Campaigns",
