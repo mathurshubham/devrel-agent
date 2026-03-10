@@ -33,6 +33,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    worker_prefetch_multiplier=1,
     beat_schedule={
         "scheduler-tick-60s": {
             "task": "tasks.scheduler.scheduler_tick",

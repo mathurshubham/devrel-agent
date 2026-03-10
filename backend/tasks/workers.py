@@ -275,7 +275,7 @@ def praw_publish_task(self, draft_id: int):
 
     asyncio.run(_publish())
 
-@celery_app.task(name="tasks.workers.praw_delete", bind=True, queue="praw_publish")
+@celery_app.task(name="tasks.workers.praw_delete", bind=True, max_retries=10, queue="praw_publish")
 def praw_delete(self, draft_id: int):
     """
     PRAW delete task (Kill Switch): Share same queue and rate limits as publishing.
