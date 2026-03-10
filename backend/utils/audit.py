@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models import AuditLog
 
@@ -18,5 +19,3 @@ async def write_audit_log(
         details=details
     )
     db.add(log)
-    # session.commit() is expected to be handled by the caller or middleware
-from typing import Optional

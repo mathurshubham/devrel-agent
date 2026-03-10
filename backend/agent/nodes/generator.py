@@ -2,7 +2,7 @@ import os
 import redis.asyncio as redis
 from datetime import date
 from sqlalchemy.future import select
-from litellm import completion
+from litellm import acompletion
 from backend.database import SessionLocal
 from backend.models import (
     Campaign, OrgLLMConfig, OrgPersona, SubredditSafetyProfile, 
@@ -56,8 +56,9 @@ async def draft_generator(state: AgentState) -> AgentState:
              template_version = "legacy_v1"
         else:
             # Inject Variables into Prompt Template
+            master_context = state.get("truncation_details", {}).get("truncated_master_context", persona.master_context or "")
             system_prompt = prompt_template.prompt_body.format(
-                master_context=persona.master_context or "",
+                master_context=master_context,
                 rulesets_dos_donts=persona.rulesets_dos_donts or "{}",
                 tone_guidelines=persona.tone_guidelines or ""
             )
@@ -82,7 +83,7 @@ async def draft_generator(state: AgentState) -> AgentState:
                 "final_status": DraftStatus.FAILED_COST_LIMIT
             }
 
-        response = completion(
+        response = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},

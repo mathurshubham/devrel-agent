@@ -94,7 +94,13 @@ def scraper_task(self, campaign_id: int):
             limit = getattr(campaign, 'post_fetch_limit', 10)
             
             new_posts_found = 0
-            for submission in subreddit.new(limit=limit):
+            
+            def _fetch_submissions():
+                return list(subreddit.new(limit=limit))
+                
+            submissions = await asyncio.to_thread(_fetch_submissions)
+            
+            for submission in submissions:
                 post_id = submission.id
                 
                 # 5. Idempotency Check (TRD 4.5)

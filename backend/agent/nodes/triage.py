@@ -1,6 +1,6 @@
 import json
 import litellm
-from litellm import completion
+from litellm import acompletion
 from backend.database import SessionLocal
 from backend.models import Campaign, OrgLLMConfig, OrgPersona
 from backend.utils.encryption import decrypt
@@ -34,7 +34,7 @@ async def llm_intent_classifier(state: AgentState) -> AgentState:
         )
         user_prompt = f"Keywords: {matched_keywords}\n\nContent:\n{original_text}"
 
-        response = completion(
+        response = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -84,22 +84,52 @@ async def tokenizer_and_truncator(state: AgentState) -> AgentState:
         if current_tokens <= budget:
             return {**state, "truncation_applied": False}
 
-        # Truncation logic: Split by double newline (our part separator)
         parts = original_text.split("\n\n")
-        # Keep Title and Content (first two parts)
         header = parts[:2]
         comments = parts[2:]
         
+        details = {}
+        api_key = decrypt(llm_config.encrypted_api_key) if llm_config and llm_config.encrypted_api_key else None
+        
         removed_count = 0
         while comments and count_tokens(model, "\n\n".join(header + comments)) > budget:
-            comments.pop() # Remove last (oldest as per our list build)
+            comments.pop()
             removed_count += 1
             
-        truncated_text = "\n\n".join(header + comments)
+        modified_text = "\n\n".join(header + comments)
+        
+        if count_tokens(model, modified_text) > budget:
+            details["summarized"] = True
+            if api_key:
+                try:
+                    prompt = f"Summarize this Reddit post concisely while keeping core intent to reduce length drastically:\n{modified_text}"
+                    response = await acompletion(
+                        model=model,
+                        messages=[{"role": "system", "content": "You are a concise summarizer."}, {"role": "user", "content": prompt}],
+                        api_key=api_key
+                    )
+                    modified_text = response.choices[0].message.content
+                except Exception:
+                    modified_text = modified_text[:2000]
+            else:
+                modified_text = modified_text[:2000]
+                
+        # 3. Truncate Master Context tail if still over limit
+        current_t = count_tokens(model, modified_text)
+        limit = litellm.get_max_tokens(model)
+        available_for_master = limit - persona.rulesets_token_count - current_t - 500
+        
+        if available_for_master < persona.master_context_tokens:
+            master = persona.master_context or ""
+            char_limit = max(0, int(available_for_master * 3.5))
+            details["master_context_truncated"] = True
+            details["truncated_master_context"] = master[:char_limit] + "... (truncated due to context limit)"
+            
+        details["removed_comments"] = removed_count
         
         return {
             **state,
-            "original_text": truncated_text,
-            "truncation_applied": removed_count > 0,
-            "truncation_details": {"removed_comments": removed_count}
+            "original_text": modified_text,
+            "truncation_applied": True,
+            "truncation_details": details
         }

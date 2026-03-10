@@ -2,6 +2,7 @@ import praw
 import re
 import redis.asyncio as redis
 import os
+import asyncio
 from sqlalchemy.future import select
 from backend.database import SessionLocal
 from backend.models import Campaign, RedditAccount
@@ -43,43 +44,63 @@ async def reddit_post_fetch(state: AgentState) -> AgentState:
         # Node 1: Fetches a post using the distributed token lock logic (TRD 4.6)
         token = await get_praw_token(reddit_account.id, reddit_account, redis_client)
 
-        reddit = praw.Reddit(
-            client_id=reddit_account.client_id,
-            client_secret=decrypt(reddit_account.encrypted_secret),
-            access_token=token,
-            user_agent="SentinelDevRelAgent/1.0"
-        )
+        def _fetch():
+            reddit = praw.Reddit(
+                client_id=reddit_account.client_id,
+                client_secret=decrypt(reddit_account.encrypted_secret),
+                access_token=token,
+                user_agent="SentinelDevRelAgent/1.0"
+            )
 
-        submission = reddit.submission(id=post_id)
-        
-        # Build original_text
-        text_parts = []
-        text_parts.append(f"Title: {submission.title}")
-        text_parts.append(f"Content: {submission.selftext}")
-        
-        # Fetch top comments
-        submission.comment_sort = "top"
-        submission.comments.replace_more(limit=0) # Only top-level for now as per TRD 5.5
-        
-        comments_taken = 0
-        for comment in submission.comments:
-            if comments_taken >= campaign.comment_fetch_limit:
-                break
+            submission = reddit.submission(id=post_id)
             
-            # Truncate comment if it exceeds max_comment_chars
-            body = comment.body
-            if len(body) > campaign.max_comment_chars:
-                body = body[:campaign.max_comment_chars] + "..."
+            text_parts = []
+            text_parts.append(f"Title: {submission.title}")
+            text_parts.append(f"Content: {submission.selftext}")
             
-            text_parts.append(f"Comment by u/{comment.author}: {body}")
-            comments_taken += 1
+            submission.comment_sort = "top"
+            submission.comments.replace_more(limit=0)
             
-        full_text = "\n\n".join(text_parts)
+            limit = getattr(campaign, 'comment_fetch_limit', 10)
+            include_op = getattr(campaign, 'include_op_context', True)
+            max_chars = getattr(campaign, 'max_comment_chars', 500)
+            comments_taken = 0
+            
+            def process_comment_tree(comment, depth=0, force_include=False):
+                nonlocal comments_taken
+                is_op = hasattr(comment, 'author') and comment.author == submission.author
+                
+                include_this = force_include
+                if depth == 0:
+                    if comments_taken < limit:
+                        include_this = True
+                        comments_taken += 1
+                    elif include_op and is_op:
+                        include_this = True
+                elif include_op and is_op:
+                    include_this = True
+                    
+                if include_this:
+                    body = comment.body
+                    if len(body) > max_chars:
+                        body = body[:max_chars] + "..."
+                    indent = "  " * depth
+                    text_parts.append(f"{indent}Comment by u/{comment.author}: {body}")
+                
+                for reply in comment.replies:
+                    process_comment_tree(reply, depth + 1, force_include=include_this)
+
+            for comment in submission.comments:
+                process_comment_tree(comment)
+                
+            return "\n\n".join(text_parts), f"https://reddit.com{submission.permalink}"
+
+        full_text, post_url = await asyncio.to_thread(_fetch)
         
         return {
             **state,
             "original_text": full_text,
-            "post_url": f"https://reddit.com{submission.permalink}"
+            "post_url": post_url
         }
 
 async def keyword_matcher(state: AgentState) -> AgentState:
