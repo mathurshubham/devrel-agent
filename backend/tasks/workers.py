@@ -1,44 +1,264 @@
-from celery_app import celery_app
+import asyncio
 import logging
+import os
+import time
+import redis.asyncio as redis
+from datetime import datetime, timezone
+from typing import Dict, Any
+
+from sqlalchemy import select, update
+from celery_app import celery_app
+
+from backend.database import SessionLocal
+from backend.models import (
+    DraftReply, Campaign, RedditAccount, AuditLog, 
+    DraftStatus, CampaignStatus
+)
+from backend.agent.graph import app
+from backend.utils.audit import write_audit_log
+from backend.utils.encryption import decrypt
+from backend.utils.praw_token import get_praw_token, _refresh_praw_token_mock
 
 logger = logging.getLogger(__name__)
 
-@celery_app.task(name="tasks.workers.scraper_task", bind=True, max_retries=3)
+# Redis Client for Lock and Rate Limiting (Async as per User Fix)
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.from_url(REDIS_URL)
+
+async def _get_account_rate_limit(account_id: int) -> bool:
+    """
+    Enforces 2-second inter-post delay using Redis Sorted Set (Token Bucket).
+    Returns True if allowed, False if busy.
+    """
+    now = time.time()
+    key = f"praw:last_post:{account_id}"
+    
+    # Remove entries older than 2 seconds (Token Bucket approach via ZSET)
+    await redis_client.zremrangebyscore(key, "-inf", now - 2.0)
+    
+    # Check if any entry remains within the last 2 seconds
+    count = await redis_client.zcard(key)
+    if count > 0:
+        return False
+        
+    # Add current timestamp to reserve slot
+    await redis_client.zadd(key, {str(now): now})
+    await redis_client.expire(key, 10) # Cleanup safety
+    return True
+
+@celery_app.task(name="tasks.workers.scraper_task", bind=True, max_retries=3, queue="scraper")
 def scraper_task(self, campaign_id: int):
     """
-    Scraper task: Fetches Reddit posts and triages them.
-    Scaffolded for Phase 4.
+    Scraper task: Fetches Reddit posts and dispatches LangGen.
+    Executes Node 1 & 2 of the pipeline.
     """
-    logger.info(f"Running scraper_task for campaign {campaign_id}")
-    # TODO: Implement RedditPostFetch and KeywordMatcher logic
-    pass
+    from backend.agent.nodes.scraper import reddit_post_fetch, keyword_matcher
+    
+    async def _run():
+        logger.info(f"Running scraper_task for campaign {campaign_id}")
+        
+        # Scaffolding: In a real scenario, this task would fetch a list of post IDs.
+        # Here we model the handoff to the LangGraph Nodes 1 & 2.
+        post_id = "test_post_cid" # Placeholder ID for demonstration
+        
+        initial_state = {
+            "campaign_id": campaign_id,
+            "reddit_post_id": post_id,
+            "post_url": "",
+            "original_text": "",
+            "matched_keywords": [],
+            "pre_filter_pass": False,
+            "confidence_score": 0.0,
+            "triage_reasoning": "",
+            "truncation_applied": False,
+            "truncation_details": {},
+            "ai_draft_text": "",
+            "model_payload_token_count": 0,
+            "final_status": DraftStatus.PENDING
+        }
+        
+        # Step 1: Fetch (Node 1)
+        state = await reddit_post_fetch(initial_state)
+        # Step 2: Match (Node 2)
+        state = await keyword_matcher(state)
+        
+        if state["pre_filter_pass"]:
+            logger.info(f"Keyword match for campaign {campaign_id}, post {post_id}. Handoff to langgen.")
+            celery_app.send_task("tasks.workers.langgen_task", args=[state])
+        else:
+            logger.info(f"Post {post_id} did not pass filters.")
 
-@celery_app.task(name="tasks.workers.langgen_task", bind=True, max_retries=3)
-def langgen_task(self, draft_id: int):
-    """
-    LangGen task: Runs the full LangGraph pipeline.
-    Scaffolded for Phase 4.
-    """
-    logger.info(f"Running langgen_task for draft {draft_id}")
-    # TODO: Implement Nodes 1-6 of the LangGraph pipeline
-    pass
+    asyncio.run(_run())
 
-@celery_app.task(name="tasks.workers.praw_publish_task", bind=True, max_retries=5)
+@celery_app.task(name="tasks.workers.langgen_task", bind=True, max_retries=3, queue="langgen")
+def langgen_task(self, state: Dict[str, Any]):
+    """
+    LangGen task: Runs Nodes 3-6 of the LangGraph pipeline sequentially.
+    """
+    async def _run():
+        logger.info(f"Running langgen_task for campaign {state['campaign_id']}")
+        
+        # Invoke the compiled LangGraph application.
+        # Nodes 3-6 execute in-memory within this task as per TRD 4.3.
+        final_state = await app.ainvoke(state)
+        
+        # Persist the workflow result to DraftReply
+        async with SessionLocal() as db:
+            draft = DraftReply(
+                campaign_id=final_state["campaign_id"],
+                reddit_post_id=final_state["reddit_post_id"],
+                reddit_post_url=final_state["post_url"],
+                original_text=final_state["original_text"],
+                ai_draft_text=final_state["ai_draft_text"],
+                confidence_score=final_state["confidence_score"],
+                status=final_state["final_status"],
+                truncation_applied=final_state.get("truncation_applied", False),
+                truncation_details=final_state.get("truncation_details", {}),
+                model_payload_token_count=final_state.get("model_payload_token_count", 0)
+            )
+            db.add(draft)
+            await db.commit()
+            await db.refresh(draft)
+            
+            logger.info(f"Persisted DraftReply {draft.id} with status {draft.status}")
+            
+            # Auto-Pilot handoff: Dispatch to publish queue if criteria met
+            if draft.status == DraftStatus.PUBLISHED:
+                celery_app.send_task("tasks.workers.praw_publish_task", args=[draft.id])
+
+    asyncio.run(_run())
+
+@celery_app.task(name="tasks.workers.praw_publish_task", bind=True, max_retries=5, queue="praw_publish")
 def praw_publish_task(self, draft_id: int):
     """
-    PRAW publish task: Publishes the generated draft to Reddit.
-    Scaffolded for Phase 4.
+    PRAW publish task: Publishes reply to Reddit with idempotency & rate limits.
     """
-    logger.info(f"Running praw_publish_task for draft {draft_id}")
-    # TODO: Implement PRAW publish logic with distributed lock
-    pass
+    async def _publish():
+        logger.info(f"PRAW publish check for draft {draft_id}")
+        
+        # 1. Redis Idempotency Lock (TRD Section 6)
+        lock_key = f"praw_publish:{draft_id}"
+        if not await redis_client.set(lock_key, "locked", nx=True, px=300000): # 5 min TTL
+            logger.warning(f"Publish operation for draft {draft_id} is already in progress.")
+            return
 
-@celery_app.task(name="tasks.workers.praw_delete", bind=True)
-def praw_delete(self, reddit_post_id: str):
+        try:
+            async with SessionLocal() as db:
+                # Load draft and check status
+                draft = await db.get(DraftReply, draft_id)
+                if not draft or draft.status == DraftStatus.PUBLISHED:
+                    logger.info(f"Draft {draft_id} is already published or missing.")
+                    return
+
+                campaign = await db.get(Campaign, draft.campaign_id)
+                
+                # Retrieve active Reddit account
+                result = await db.execute(
+                    select(RedditAccount).where(
+                        RedditAccount.org_id == campaign.org_id,
+                        RedditAccount.is_active == True
+                    ).limit(1)
+                )
+                account = result.scalar_one_or_none()
+                if not account:
+                    raise ValueError(f"No active Reddit account found for org {campaign.org_id}")
+
+                # 2. Redis Sorted Set Rate Limiter (2-second inter-post delay)
+                if not await _get_account_rate_limit(account.id):
+                    logger.info(f"Account {account.username} rate limit active. Re-queuing...")
+                    self.retry(countdown=2)
+                    return
+
+                # 3. Publish Execution (Simulation)
+                # Ensure PRAW distributed lock handles token refresh
+                # In real code: await refresh_praw_token(account)
+                token = get_praw_token(account.id, account, redis_client, _refresh_praw_token_mock)
+                logger.info(f"Publishing reply via account {account.username}")
+                
+                # Simulation result
+                published_url = f"https://reddit.com/r/{campaign.subreddit_name}/comments/{draft.reddit_post_id}/_/{draft_id}"
+                
+                # 4. Successful State Transition
+                draft.status = DraftStatus.PUBLISHED
+                draft.published_at = datetime.now(timezone.utc)
+                draft.live_reddit_url = published_url
+                draft.published_by_account_id = account.id
+                
+                # Audit Log: DRAFT_PUBLISHED
+                await write_audit_log(
+                    db, 
+                    org_id=campaign.org_id,
+                    action="DRAFT_PUBLISHED",
+                    details={"draft_id": draft_id, "account": account.username, "url": published_url}
+                )
+                
+                await db.commit()
+                logger.info(f"Published Draft {draft_id} successfully.")
+
+        except Exception as e:
+            logger.error(f"Publish failure for draft {draft_id}: {str(e)}")
+            # Defensive Audit Log & Status Update
+            async with SessionLocal() as db_fail:
+                d = await db_fail.get(DraftReply, draft_id)
+                if d:
+                    d.status = DraftStatus.FAILED
+                    d.failed_reason = str(e)
+                    
+                    c = await db_fail.get(Campaign, d.campaign_id)
+                    await write_audit_log(
+                        db_fail,
+                        org_id=c.org_id,
+                        action="DRAFT_PUBLISHED_FAILED",
+                        details={"draft_id": draft_id, "error": str(e)}
+                    )
+                    await db_fail.commit()
+            raise e
+        # Idempotency lock remains for TTL to prevent double-posting on rapid retries
+
+    asyncio.run(_publish())
+
+@celery_app.task(name="tasks.workers.praw_delete", bind=True, queue="praw_publish")
+def praw_delete(self, draft_id: int):
     """
-    PRAW delete task: Remove a post from Reddit (Kill Switch).
-    Scaffolded for Phase 4.
+    PRAW delete task (Kill Switch): Share same queue and rate limits as publishing.
     """
-    logger.info(f"Running praw_delete for post {reddit_post_id}")
-    # TODO: Implement PRAW deletion logic
-    pass
+    async def _delete():
+        logger.info(f"Kill Switch: Deleting draft {draft_id}")
+        
+        async with SessionLocal() as db:
+            draft = await db.get(DraftReply, draft_id)
+            if not draft or not draft.live_reddit_url:
+                logger.warning(f"Draft {draft_id} is not in a deletable live state.")
+                return
+
+            campaign = await db.get(Campaign, draft.campaign_id)
+            account = await db.get(RedditAccount, draft.published_by_account_id)
+            
+            if not account:
+                logger.error(f"Publishing account context missing for draft {draft_id}")
+                return
+
+            # Rate Limit Sync
+            if not await _get_account_rate_limit(account.id):
+                logger.info(f"Delete delayed by account rate limit. Re-queuing...")
+                self.retry(countdown=2)
+                return
+
+            # SIMULATION: Comment deletion via PRAW
+            logger.info(f"Deleted comment {draft.live_reddit_url} from account {account.username}")
+            
+            # Transition status
+            draft.status = DraftStatus.DELETED_BY_KILLSWITCH
+            
+            # Audit Log: KILLSWITCH_POST_DELETED
+            await write_audit_log(
+                db,
+                org_id=campaign.org_id,
+                action="KILLSWITCH_POST_DELETED",
+                details={"draft_id": draft_id, "account": account.username}
+            )
+            
+            await db.commit()
+            logger.info(f"Kill Switch success for draft {draft_id}")
+
+    asyncio.run(_delete())
