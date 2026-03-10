@@ -1,6 +1,6 @@
-"use strict";
+"use client";
 
-import * as React from "react";
+import React from "react";
 import {
     BarChart3,
     Inbox,
@@ -38,6 +38,8 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
+import { dark } from "@clerk/themes";
 
 const items = [
     {
@@ -101,15 +103,44 @@ export function AppSidebar() {
                     </SidebarGroupContent>
                 </SidebarGroup>
             </SidebarContent>
-            <SidebarFooter className="border-t border-border/40 p-3 bg-zinc-950">
-                <div className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-zinc-900 cursor-pointer transition-colors group">
-                    <div className="h-7 w-7 rounded border border-border/40 bg-zinc-900 flex items-center justify-center text-[10px] font-bold">
-                        TE
-                    </div>
-                    <div className="flex flex-col group-data-[collapsible=icon]:hidden">
-                        <span className="text-xs font-bold leading-none tracking-tight">TryEval</span>
-                        <span className="text-[9px] text-muted-foreground font-mono mt-1 opacity-50 uppercase font-bold">org:admin</span>
-                    </div>
+            <SidebarFooter className="border-t border-border/40 p-2 bg-zinc-950 flex flex-row items-center justify-between gap-2">
+                <div className="flex-1 overflow-hidden">
+                    <OrganizationSwitcher
+                        appearance={{
+                            baseTheme: dark,
+                            variables: {
+                                colorPrimary: '#fafafa',
+                                colorBackground: '#09090b',
+                                colorText: '#fafafa',
+                            },
+                            elements: {
+                                rootBox: "w-full",
+                                organizationSwitcherTrigger: "w-full px-2 py-1.5 hover:bg-zinc-900 transition-colors rounded-md shadow-none border-none",
+                                organizationPreviewTextContainer: "group-data-[collapsible=icon]:hidden",
+                                organizationSwitcherTriggerIcon: "group-data-[collapsible=icon]:hidden",
+                                organizationPreviewMainIdentifier: "text-xs font-bold leading-none tracking-tight",
+                                organizationPreviewSecondaryIdentifier: "text-[9px] text-muted-foreground font-mono mt-1 opacity-50 uppercase font-bold",
+                                popupBox: "border border-border/40 bg-zinc-950 shadow-2xl",
+                            }
+                        }}
+                    />
+                </div>
+                <div className="flex shrink-0">
+                    <UserButton
+                        appearance={{
+                            baseTheme: dark,
+                            variables: {
+                                colorPrimary: '#fafafa',
+                                colorBackground: '#09090b',
+                                colorText: '#fafafa',
+                            },
+                            elements: {
+                                userButtonTrigger: "hover:bg-zinc-900 transition-colors rounded-md shadow-none p-1",
+                                userButtonPopoverCard: "border border-border/40 bg-zinc-950 shadow-2xl",
+                                userButtonPopoverFooter: "hidden", // Clean, minimal look
+                            }
+                        }}
+                    />
                 </div>
             </SidebarFooter>
         </Sidebar>
