@@ -96,11 +96,14 @@ async def run_scout(
     call_kwargs: dict,
     instructions: str = DEFAULT_SCOUT_INSTRUCTIONS,
     hint: str = "",
+    acompletion_fn=None,
 ) -> ScoutOutput:
     """One structured LLM call selecting which posts to draft for, and how."""
     if not posts:
         return ScoutOutput(selections=[])
 
     prompt = build_scout_prompt(instructions, platform, angle_names, posts, hint)
-    parsed, _response = await structured_completion(prompt, model, ScoutOutput, call_kwargs)
+    parsed, _response = await structured_completion(
+        prompt, model, ScoutOutput, call_kwargs, acompletion_fn=acompletion_fn
+    )
     return parsed
