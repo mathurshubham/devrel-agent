@@ -28,6 +28,14 @@ class PersonaUpdate(BaseModel):
     tone_guidelines: Optional[str] = None
 
 
+class PersonaResponse(BaseModel):
+    master_context: Optional[str] = None
+    rulesets_dos_donts: Optional[Dict[str, List[str]]] = None
+    tone_guidelines: Optional[str] = None
+    master_context_token_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SubredditSafetyProfileBase(BaseModel):
     subreddit: str
     max_daily_drafts: int = 3
@@ -191,6 +199,15 @@ class DraftOpenCopyResponse(BaseModel):
 class DraftLockResponse(BaseModel):
     status: str
     expires_at: datetime
+
+
+class DraftReplyListResponse(BaseModel):
+    """Paginated envelope for GET /api/inbox/drafts. The frontend contract
+    keys on `items`/`total` — keep them stable."""
+    items: List[DraftReplyResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 # ── PromptTemplate Schemas ───────────────────────────────────────────────────
