@@ -1,13 +1,12 @@
-import asyncio
 import logging
-import os
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, update
 
 from backend.celery_app import celery_app
-from backend.database import SessionLocal
+from backend.database import build_session_factory
 from backend.models import DraftReply, Campaign, CampaignStatus, DraftStatus
+from backend.utils.celery_async import run_async
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +23,21 @@ def scraper_task(self, campaign_id: int):
     """
     async def _run():
         logger.info(f"scraper_task invoked for campaign {campaign_id} (Apify integration pending)")
-        async with SessionLocal() as db:
-            campaign = await db.get(Campaign, campaign_id)
-            if not campaign or campaign.status != CampaignStatus.ACTIVE:
-                logger.warning(f"Campaign {campaign_id} not found or inactive.")
-                return
-            logger.info(
-                f"Campaign {campaign_id} ({campaign.platform}) is due for polling; "
-                "deferring to Apify-backed scraper (not yet implemented)."
-            )
+        engine, session_local = build_session_factory()
+        try:
+            async with session_local() as db:
+                campaign = await db.get(Campaign, campaign_id)
+                if not campaign or campaign.status != CampaignStatus.ACTIVE:
+                    logger.warning(f"Campaign {campaign_id} not found or inactive.")
+                    return
+                logger.info(
+                    f"Campaign {campaign_id} ({campaign.platform}) is due for polling; "
+                    "deferring to Apify-backed scraper (not yet implemented)."
+                )
+        finally:
+            await engine.dispose()
 
-    asyncio.run(_run())
+    run_async(_run)
 
 
 @celery_app.task(name="backend.tasks.workers.langgen_task", bind=True, max_retries=3, queue="langgen")
@@ -44,31 +47,45 @@ def langgen_task(self, state: dict):
         from backend.agent.graph import app as agent_app
 
         logger.info(f"Running langgen_task for campaign {state['campaign_id']}")
-        final_state = await agent_app.ainvoke(state)
 
-        async with SessionLocal() as db:
-            draft = DraftReply(
-                org_id=final_state.get("org_id"),
-                campaign_id=final_state["campaign_id"],
-                platform=final_state["platform"],
-                post_id=final_state["post_id"],
-                url=final_state.get("url"),
-                original_content=final_state.get("original_content"),
-                ai_draft_text=final_state.get("ai_draft_text"),
-                confidence=final_state.get("confidence"),
-                triage_reasoning=final_state.get("triage_reasoning"),
-                signal_tier=final_state.get("signal_tier"),
-                status=final_state["final_status"],
-                prompt_template_version=final_state.get("prompt_template_version"),
-                response_token_count=final_state.get("response_token_count", 0),
-            )
-            db.add(draft)
-            await db.commit()
-            await db.refresh(draft)
+        engine, session_local = build_session_factory()
+        try:
+            async with session_local() as db:
+                # The caller may not always have a real org_id on hand (e.g.
+                # a hand-built state dict) -- fall back to the campaign's own
+                # org_id so draft persistence never gets a null org_id.
+                org_id = state.get("org_id")
+                if not org_id:
+                    campaign = await db.get(Campaign, state["campaign_id"])
+                    org_id = campaign.org_id if campaign else None
+                state_with_org = {**state, "org_id": org_id}
 
-            logger.info(f"Persisted DraftReply {draft.id} with status {draft.status}")
+                final_state = await agent_app.ainvoke(state_with_org)
 
-    asyncio.run(_run())
+                draft = DraftReply(
+                    org_id=final_state.get("org_id") or org_id,
+                    campaign_id=final_state["campaign_id"],
+                    platform=final_state["platform"],
+                    post_id=final_state["post_id"],
+                    url=final_state.get("url"),
+                    original_content=final_state.get("original_content"),
+                    ai_draft_text=final_state.get("ai_draft_text"),
+                    confidence=final_state.get("confidence"),
+                    triage_reasoning=final_state.get("triage_reasoning"),
+                    signal_tier=final_state.get("signal_tier"),
+                    status=final_state["final_status"],
+                    prompt_template_version=final_state.get("prompt_template_version"),
+                    response_token_count=final_state.get("response_token_count", 0),
+                )
+                db.add(draft)
+                await db.commit()
+                await db.refresh(draft)
+
+                logger.info(f"Persisted DraftReply {draft.id} with status {draft.status}")
+        finally:
+            await engine.dispose()
+
+    run_async(_run)
 
 
 @celery_app.task(name="backend.tasks.workers.clear_expired_locks", bind=True, queue="maintenance")
@@ -78,28 +95,32 @@ def clear_expired_locks(self):
         logger.info("Running clear_expired_locks maintenance task")
         now = datetime.now(timezone.utc)
 
-        async with SessionLocal() as db:
-            expiry_threshold = now - timedelta(minutes=15)
+        engine, session_local = build_session_factory()
+        try:
+            async with session_local() as db:
+                expiry_threshold = now - timedelta(minutes=15)
 
-            stmt = (
-                update(DraftReply)
-                .where(
-                    DraftReply.locked_at.is_not(None),
-                    DraftReply.locked_at < expiry_threshold,
+                stmt = (
+                    update(DraftReply)
+                    .where(
+                        DraftReply.locked_at.is_not(None),
+                        DraftReply.locked_at < expiry_threshold,
+                    )
+                    .values(locked_by_user_id=None, locked_at=None)
                 )
-                .values(locked_by_user_id=None, locked_at=None)
-            )
 
-            result = await db.execute(stmt)
-            await db.commit()
+                result = await db.execute(stmt)
+                await db.commit()
 
-            rows_cleared = result.rowcount
-            if rows_cleared > 0:
-                logger.info(f"Cleared {rows_cleared} expired draft locks.")
-            else:
-                logger.debug("No expired draft locks to clear.")
+                rows_cleared = result.rowcount
+                if rows_cleared > 0:
+                    logger.info(f"Cleared {rows_cleared} expired draft locks.")
+                else:
+                    logger.debug("No expired draft locks to clear.")
+        finally:
+            await engine.dispose()
 
-    asyncio.run(_clear())
+    run_async(_clear)
 
 
 @celery_app.task(name="backend.tasks.workers.poll_engagement_outcomes", bind=True, queue="maintenance")
