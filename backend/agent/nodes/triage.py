@@ -5,6 +5,7 @@ from litellm import acompletion
 from backend.database import SessionLocal
 from backend.models import Campaign, OrgLLMConfig, OrgPersona
 from backend.utils.encryption import decrypt
+from backend.utils.org_lookups import get_org_llm_config, get_org_persona
 from backend.utils.tokenizer import compute_token_budget, count_tokens, DEFAULT_MODEL
 from backend.agent.state import AgentState
 
@@ -40,7 +41,7 @@ async def llm_intent_classifier(state: AgentState) -> AgentState:
 
     async with SessionLocal() as db:
         campaign = await db.get(Campaign, campaign_id)
-        llm_config = await db.get(OrgLLMConfig, campaign.org_id)
+        llm_config = await get_org_llm_config(db, campaign.org_id)
 
         if not llm_config or not llm_config.model_name:
             return {**state, "confidence": 0.0, "triage_reasoning": "No LLM configuration found"}
@@ -90,8 +91,8 @@ async def tokenizer_and_truncator(state: AgentState) -> AgentState:
 
     async with SessionLocal() as db:
         campaign = await db.get(Campaign, campaign_id)
-        llm_config = await db.get(OrgLLMConfig, campaign.org_id)
-        persona = await db.get(OrgPersona, campaign.org_id)
+        llm_config = await get_org_llm_config(db, campaign.org_id)
+        persona = await get_org_persona(db, campaign.org_id)
 
         model = llm_config.model_name if (llm_config and llm_config.model_name) else DEFAULT_MODEL
 
