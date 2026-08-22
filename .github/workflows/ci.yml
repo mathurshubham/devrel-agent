@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+
+    # Postgres + Redis service containers, published on the ports
+    # tests/test_postgres_integration.py already defaults to
+    # (TEST_DATABASE_URL / TEST_REDIS_URL), so the 3 integration tests that
+    # are normally skipped locally actually run here instead of being
+    # silently skipped.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Fernet key: exactly 64 hex chars (32 bytes). Test-only value, not a
+      # real secret -- never reuse this outside CI.
+      ENCRYPTION_SECRET: "9f9fecf28f36a9810412ec3a29c07d35694268b8afe145faaa34323c4dc9be00"
+      # backend/utils/auth.py only constructs a PyJWKClient against this URL;
+      # nothing in the test suite performs a live JWKS fetch, so a
+      # syntactically valid but unreachable URL is fine.
+      CLERK_JWKS_URL: "https://ci-placeholder.clerk.accounts.dev/.well-known/jwks.json"
+      DATABASE_URL: "postgresql+asyncpg://postgres:test@localhost:55432/test"
+      REDIS_URL: "redis://localhost:56379/0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --project backend --locked
+
+      - name: Wait for Postgres/Redis
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 55432 -U postgres && break
+            sleep 1
+          done
+          redis-cli -h localhost -p 56379 ping
+
+      - name: Run tests
+        run: PYTHONPATH=. uv run --project backend pytest tests/ -q
+
+  frontend:
+    name: Frontend (build + typecheck)
+    runs-on: ubuntu-latest
+
+    env:
+      # Build-time only, never a real Clerk key: @clerk/nextjs requires a
+      # syntactically valid publishable key to render <ClerkProvider> during
+      # `next build`'s static generation pass.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_Y2ktcGxhY2Vob2xkZXIuZXhhbXBsZS5jb20k"
+      CLERK_SECRET_KEY: "sk_test_ci_placeholder"
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Type check
+        working-directory: frontend
+        run: npx tsc --noEmit
