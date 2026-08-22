@@ -15,6 +15,12 @@ from backend.pipeline import analyst_nodes
 
 class _FakeOrg:
     id = 1
+    is_active = True
+
+
+class _FakeInactiveOrg:
+    id = 1
+    is_active = False
 
 
 class _FakeAnalystRun:
@@ -83,6 +89,15 @@ async def test_ingest_node_terminal_when_org_missing():
     state = {"org_id": 999, "run_id": 1, "week_of": "2026-08-17"}
     result = await analyst_nodes.ingest_node(state, _config(db))
     assert result == {"terminal": True, "terminal_reason": "org_missing"}
+
+
+async def test_ingest_node_terminal_when_org_is_inactive():
+    """Same guard scheduler_tick applies to reply-pipeline campaigns --
+    a deactivated org must not get an Analyst run either."""
+    db = _FakeDB(org=_FakeInactiveOrg())
+    state = {"org_id": 1, "run_id": 1, "week_of": "2026-08-17"}
+    result = await analyst_nodes.ingest_node(state, _config(db))
+    assert result == {"terminal": True, "terminal_reason": "org_inactive"}
 
 
 async def test_ingest_node_marks_run_complete_when_nothing_ingested(monkeypatch):

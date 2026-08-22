@@ -50,19 +50,78 @@ from backend.pipeline.analyst_schemas import (
 from backend.pipeline.analyst_state import AnalystState
 from backend.pipeline.analyst_templates import get_analyst_templates, render
 from backend.pipeline.llm_transport import (
-    extract_usage,
     llm_call_kwargs,
     resolve_model,
     structured_completion,
     text_completion,
 )
-from backend.utils.cost_guard import record_llm_usage
+from backend.utils.cost_guard import CostLimitExceeded, check_and_record_llm_usage
 from backend.utils.org_lookups import get_active_apify_vault_tokens, get_org_llm_config, get_org_settings
+from backend.utils.tokenizer import count_tokens
 
 logger = logging.getLogger(__name__)
 
 #: Per-post LLM calls run concurrently but bounded (PRD V7 §5.6).
 CONCURRENCY = 5
+
+#: How far back cross-week dedup (``_previously_classified_post_ids``) looks
+#: for a post already classified in an earlier run -- unbounded would mean
+#: every ingest scans the org's entire classification history.
+_DEDUP_LOOKBACK_WEEKS = 8
+
+#: Sentinel distinguishing "config carries no cached value" from "config
+#: explicitly carries ``None``" (e.g. an org genuinely has no OrgLLMConfig
+#: row yet) -- ``dict.get(key, _UNSET)`` tells those two cases apart so a
+#: pre-fetched ``None`` isn't mistaken for "not cached, go fetch it".
+_UNSET = object()
+
+
+async def _check_cost_cap(
+    org_id: int, estimated_tokens: int, model: str, llm_config, redis_client
+) -> Optional[str]:
+    """Pre-dispatch cap check -- mirrors graph #1's ``persist_gate_node``.
+
+    Returns an error message if the org's daily-token/monthly-cost cap was
+    just breached (the caller must stop dispatching further LLM calls for
+    this run), or ``None`` if the call may proceed. ``redis_client is None``
+    means no cap store is reachable (unit tests, or a caller that opted
+    out) -- degrade to "can't check, proceed unmetered" rather than crash,
+    same as the metering-only ``record_llm_usage`` this replaces used to.
+    """
+    if redis_client is None:
+        return None
+    try:
+        await check_and_record_llm_usage(
+            org_id=org_id,
+            estimated_tokens=estimated_tokens,
+            model=model,
+            r=redis_client,
+            db=None,
+            llm_config=llm_config,
+        )
+        return None
+    except CostLimitExceeded as exc:
+        return str(exc)
+
+
+async def _fail_run_cost_limit(session_local, run_id: Optional[int], org_id: int, message: str) -> None:
+    """Terminates an Analyst run cleanly on a cost-cap breach: the
+    ``AnalystRun`` row is marked FAILED (reason cost_limit) and the breach
+    is logged -- so a capped-out run never leaves a half-written brief or a
+    row stuck RUNNING."""
+    if run_id is None:
+        logger.error("Analyst run cost-limit breach for org=%s with no run_id to fail: %s", org_id, message)
+        return
+    async with session_local() as db:
+        run = await db.get(AnalystRun, run_id)
+        if run and run.status not in ("COMPLETED", "FAILED"):
+            run.status = "FAILED"
+            run.finished_at = now_utc()
+        await _log_system(
+            db, org_id, "ERROR", "pipeline.analyst.cost_limit",
+            f"Analyst run {run_id} terminated (reason=cost_limit): {message}",
+        )
+        await db.commit()
 
 #: Truncate post content before it goes into any prompt -- ported from
 #: social-agent's ``AnalystService._classify_post`` ([:1500]).
@@ -133,14 +192,26 @@ async def _watchlist_block(db, org_id: int) -> str:
 
 
 async def _previously_classified_post_ids(db, org_id: int, week_of: date) -> set:
-    """Post ids already classified in any earlier week for this org (PRD V7
-    §5.6 cross-week dedup). Reads the whole ``source_meta`` blob back in
-    Python rather than a JSONB path operator, so this works the same way
-    against Postgres or aiosqlite in tests."""
+    """Post ids already classified in an earlier week for this org, within
+    the last ``_DEDUP_LOOKBACK_WEEKS`` weeks (PRD V7 §5.6 cross-week dedup).
+    Reads the whole ``source_meta`` blob back in Python rather than a JSONB
+    path operator, so this works the same way against Postgres or aiosqlite
+    in tests.
+
+    Bounded to a rolling lookback window rather than the org's entire
+    classification history -- unbounded, every ingest would scan a
+    steadily growing ``PostClassification`` table just to dedupe against
+    weeks so old they're no longer operationally relevant.
+    """
+    cutoff = week_of - timedelta(weeks=_DEDUP_LOOKBACK_WEEKS)
     stmt = (
         select(PostClassification.source_meta)
         .join(AnalystRun, AnalystRun.id == PostClassification.run_id)
-        .where(AnalystRun.org_id == org_id, AnalystRun.week_of != week_of)
+        .where(
+            AnalystRun.org_id == org_id,
+            AnalystRun.week_of != week_of,
+            AnalystRun.week_of >= cutoff,
+        )
     )
     rows = (await db.execute(stmt)).scalars().all()
     ids: set = set()
@@ -155,13 +226,25 @@ async def ingest_node(state: AnalystState, config: RunnableConfig) -> dict:
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
-    run_id = state["run_id"]
+    # run_id is created before the graph is invoked and threaded through
+    # config, not re-derived from checkpointed state (which a resumed/
+    # retried checkpoint could otherwise serve stale) -- see
+    # backend.pipeline.analyst_graph.run_analyst_pipeline.
+    run_id = cfg.get("run_id", state.get("run_id"))
     week_of_date = date.fromisoformat(state["week_of"])
 
     async with session_local() as db:
         org = await db.get(Organization, org_id)
         if not org:
             return {"terminal": True, "terminal_reason": "org_missing"}
+        if not org.is_active:
+            # Same guard as backend.tasks.scheduler.scheduler_tick applies
+            # to reply-pipeline campaigns -- a deactivated org must not get
+            # an Analyst run either, whether dispatched by the weekly beat
+            # (which already filters on Organization.is_active before
+            # creating the run row) or an on-demand trigger racing a
+            # deactivation.
+            return {"terminal": True, "terminal_reason": "org_inactive"}
 
         org_settings = await get_org_settings(db, org_id)
         vault_tokens = await get_active_apify_vault_tokens(db, org_id)
@@ -214,10 +297,13 @@ async def triage_node(state: AnalystState, config: RunnableConfig) -> dict:
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
 
+    cached_llm_config = cfg.get("llm_config", _UNSET)
+    cached_templates = cfg.get("templates", _UNSET)
     async with session_local() as db:
-        llm_config = await get_org_llm_config(db, org_id)
-        templates = await get_analyst_templates(db, org_id)
+        llm_config = cached_llm_config if cached_llm_config is not _UNSET else await get_org_llm_config(db, org_id)
+        templates = cached_templates if cached_templates is not _UNSET else await get_analyst_templates(db, org_id)
         watchlist = await _watchlist_block(db, org_id)
 
     template = templates.get("triage", "")
@@ -229,20 +315,28 @@ async def triage_node(state: AnalystState, config: RunnableConfig) -> dict:
     model = resolve_model(llm_config)
     call_kwargs = llm_call_kwargs(llm_config)
     sem = asyncio.Semaphore(CONCURRENCY)
-    usage_entries: list[dict] = []
+    cost_limit = {"hit": False, "message": ""}
 
     async def _triage_one(post: dict) -> dict:
         base = _base_classification(post, decision="PROCESS_LIGHT")
+        if cost_limit["hit"]:
+            return base
         prompt = render(template, _post_placeholders(post)) + watchlist
         async with sem:
+            if cost_limit["hit"]:
+                return base
+            breach = await _check_cost_cap(
+                org_id, count_tokens(model, prompt), model, llm_config, redis_client
+            )
+            if breach:
+                cost_limit["hit"] = True
+                cost_limit["message"] = breach
+                return base
             try:
                 parsed, response = await structured_completion(prompt, model, TriageResult, call_kwargs)
             except Exception as exc:  # noqa: BLE001 - degrade to PROCESS_LIGHT, never drop the post
                 logger.warning("Analyst triage failed for %s: %s", post.get("post_id"), exc)
                 return base
-            usage = extract_usage(response)
-            if usage:
-                usage_entries.append(usage)
             base.update(
                 decision=parsed.decision,
                 relevance_score=parsed.relevance_score,
@@ -254,10 +348,9 @@ async def triage_node(state: AnalystState, config: RunnableConfig) -> dict:
 
     classifications = list(await asyncio.gather(*[_triage_one(p) for p in posts]))
 
-    for usage in usage_entries:
-        await record_llm_usage(
-            org_id, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), redis_client
-        )
+    if cost_limit["hit"]:
+        await _fail_run_cost_limit(session_local, run_id, org_id, cost_limit["message"])
+        return {"classifications": classifications, "terminal": True, "terminal_reason": "cost_limit"}
 
     full = sum(1 for c in classifications if c["decision"] == "PROCESS_FULL")
     skipped = sum(1 for c in classifications if c["decision"] == "SKIP")
@@ -285,12 +378,15 @@ async def cluster_node(state: AnalystState, config: RunnableConfig) -> dict:
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
     posts_by_id = {p["post_id"]: p for p in state.get("posts", [])}
 
+    cached_llm_config = cfg.get("llm_config", _UNSET)
+    cached_templates = cfg.get("templates", _UNSET)
     async with session_local() as db:
-        llm_config = await get_org_llm_config(db, org_id)
+        llm_config = cached_llm_config if cached_llm_config is not _UNSET else await get_org_llm_config(db, org_id)
         org_settings = await get_org_settings(db, org_id)
-        templates = await get_analyst_templates(db, org_id)
+        templates = cached_templates if cached_templates is not _UNSET else await get_analyst_templates(db, org_id)
 
     template = templates.get("cluster", "")
     tax_block = taxonomy_block(get_pillar_taxonomy(org_settings))
@@ -304,12 +400,23 @@ async def cluster_node(state: AnalystState, config: RunnableConfig) -> dict:
     model = resolve_model(llm_config)
     call_kwargs = llm_call_kwargs(llm_config)
     sem = asyncio.Semaphore(CONCURRENCY)
-    usage_entries: list[dict] = []
+    cost_limit = {"hit": False, "message": ""}
 
     async def _cluster_one(c: dict) -> None:
+        if cost_limit["hit"]:
+            return
         post = posts_by_id.get(c["post_id"], {})
         prompt = render(template, _post_placeholders(post)) + tax_block
         async with sem:
+            if cost_limit["hit"]:
+                return
+            breach = await _check_cost_cap(
+                org_id, count_tokens(model, prompt), model, llm_config, redis_client
+            )
+            if breach:
+                cost_limit["hit"] = True
+                cost_limit["message"] = breach
+                return
             try:
                 parsed, response = await structured_completion(prompt, model, ClusterResult, call_kwargs)
             except Exception as exc:  # noqa: BLE001
@@ -317,18 +424,14 @@ async def cluster_node(state: AnalystState, config: RunnableConfig) -> dict:
                 c["primary_pillar"] = OTHER_PILLAR
                 c["secondary_pillars"] = []
                 return
-            usage = extract_usage(response)
-            if usage:
-                usage_entries.append(usage)
             c["primary_pillar"] = parsed.primary_pillar or OTHER_PILLAR
             c["secondary_pillars"] = parsed.secondary_pillars or []
 
     await asyncio.gather(*[_cluster_one(c) for c in survivors])
 
-    for usage in usage_entries:
-        await record_llm_usage(
-            org_id, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), redis_client
-        )
+    if cost_limit["hit"]:
+        await _fail_run_cost_limit(session_local, run_id, org_id, cost_limit["message"])
+        return {"classifications": classifications, "terminal": True, "terminal_reason": "cost_limit"}
 
     return {"classifications": classifications}
 
@@ -350,11 +453,14 @@ async def stance_node(state: AnalystState, config: RunnableConfig) -> dict:
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
     posts_by_id = {p["post_id"]: p for p in state.get("posts", [])}
 
+    cached_llm_config = cfg.get("llm_config", _UNSET)
+    cached_templates = cfg.get("templates", _UNSET)
     async with session_local() as db:
-        llm_config = await get_org_llm_config(db, org_id)
-        templates = await get_analyst_templates(db, org_id)
+        llm_config = cached_llm_config if cached_llm_config is not _UNSET else await get_org_llm_config(db, org_id)
+        templates = cached_templates if cached_templates is not _UNSET else await get_analyst_templates(db, org_id)
 
     template = templates.get("stance", "")
     if not llm_config or not llm_config.model_name or not template:
@@ -363,21 +469,29 @@ async def stance_node(state: AnalystState, config: RunnableConfig) -> dict:
     model = resolve_model(llm_config)
     call_kwargs = llm_call_kwargs(llm_config)
     sem = asyncio.Semaphore(CONCURRENCY)
-    usage_entries: list[dict] = []
+    cost_limit = {"hit": False, "message": ""}
 
     async def _stance_one(c: dict) -> None:
+        if cost_limit["hit"]:
+            return
         post = posts_by_id.get(c["post_id"], {})
         values = {**_post_placeholders(post), "{PILLAR_TAG}": c.get("primary_pillar", OTHER_PILLAR)}
         prompt = render(template, values)
         async with sem:
+            if cost_limit["hit"]:
+                return
+            breach = await _check_cost_cap(
+                org_id, count_tokens(model, prompt), model, llm_config, redis_client
+            )
+            if breach:
+                cost_limit["hit"] = True
+                cost_limit["message"] = breach
+                return
             try:
                 parsed, response = await structured_completion(prompt, model, StanceResult, call_kwargs)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Analyst stance failed for %s: %s", c.get("post_id"), exc)
                 return
-            usage = extract_usage(response)
-            if usage:
-                usage_entries.append(usage)
             stance = parsed.stance if parsed.stance in VALID_STANCES else "NEUTRAL"
             c["stance"] = stance
             c["confidence"] = confidence_to_float(parsed.confidence)
@@ -385,10 +499,9 @@ async def stance_node(state: AnalystState, config: RunnableConfig) -> dict:
 
     await asyncio.gather(*[_stance_one(c) for c in survivors])
 
-    for usage in usage_entries:
-        await record_llm_usage(
-            org_id, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), redis_client
-        )
+    if cost_limit["hit"]:
+        await _fail_run_cost_limit(session_local, run_id, org_id, cost_limit["message"])
+        return {"classifications": classifications, "terminal": True, "terminal_reason": "cost_limit"}
 
     return {"classifications": classifications}
 
@@ -425,11 +538,14 @@ async def quotes_node(state: AnalystState, config: RunnableConfig) -> dict:
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
     posts_by_id = {p["post_id"]: p for p in state.get("posts", [])}
 
+    cached_llm_config = cfg.get("llm_config", _UNSET)
+    cached_templates = cfg.get("templates", _UNSET)
     async with session_local() as db:
-        llm_config = await get_org_llm_config(db, org_id)
-        templates = await get_analyst_templates(db, org_id)
+        llm_config = cached_llm_config if cached_llm_config is not _UNSET else await get_org_llm_config(db, org_id)
+        templates = cached_templates if cached_templates is not _UNSET else await get_analyst_templates(db, org_id)
 
     template = templates.get("quotes", "")
     if not llm_config or not llm_config.model_name or not template:
@@ -438,9 +554,11 @@ async def quotes_node(state: AnalystState, config: RunnableConfig) -> dict:
     model = resolve_model(llm_config)
     call_kwargs = llm_call_kwargs(llm_config)
     sem = asyncio.Semaphore(CONCURRENCY)
-    usage_entries: list[dict] = []
+    cost_limit = {"hit": False, "message": ""}
 
     async def _quotes_one(c: dict) -> None:
+        if cost_limit["hit"]:
+            return
         post = posts_by_id.get(c["post_id"], {})
         values = {
             **_post_placeholders(post),
@@ -449,22 +567,27 @@ async def quotes_node(state: AnalystState, config: RunnableConfig) -> dict:
         }
         prompt = render(template, values)
         async with sem:
+            if cost_limit["hit"]:
+                return
+            breach = await _check_cost_cap(
+                org_id, count_tokens(model, prompt), model, llm_config, redis_client
+            )
+            if breach:
+                cost_limit["hit"] = True
+                cost_limit["message"] = breach
+                return
             try:
                 parsed, response = await structured_completion(prompt, model, QuotesResult, call_kwargs)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Analyst quotes failed for %s: %s", c.get("post_id"), exc)
                 return
-            usage = extract_usage(response)
-            if usage:
-                usage_entries.append(usage)
             c["quotes"] = _normalize_quotes([q.model_dump() for q in parsed.quotes])
 
     await asyncio.gather(*[_quotes_one(c) for c in full])
 
-    for usage in usage_entries:
-        await record_llm_usage(
-            org_id, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), redis_client
-        )
+    if cost_limit["hit"]:
+        await _fail_run_cost_limit(session_local, run_id, org_id, cost_limit["message"])
+        return {"classifications": classifications, "terminal": True, "terminal_reason": "cost_limit"}
 
     return {"classifications": classifications}
 
@@ -516,7 +639,7 @@ async def aggregate_node(state: AnalystState, config: RunnableConfig) -> dict:
     cfg = _config(config)
     session_local = cfg["session_local"]
     org_id = state["org_id"]
-    run_id = state["run_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
     week_of_date = date.fromisoformat(state["week_of"])
 
     skipped = [c for c in classifications if c.get("decision") == "SKIP"]
@@ -570,8 +693,16 @@ async def aggregate_node(state: AnalystState, config: RunnableConfig) -> dict:
             )
 
         for c in processed:
-            pillar = c.get("primary_pillar")
-            if pillar not in valid_pillars:
+            # Every processed post gets a StanceObservation, including
+            # OTHER (the degrade-to-default pillar when cluster_node has
+            # no LLM/template configured, or the classifier genuinely
+            # can't fit the post into the taxonomy) -- OTHER is not itself
+            # one of the org's taxonomy tags, so it must be allowed
+            # explicitly here or every degraded run silently records zero
+            # stance observations. A pillar that is neither a taxonomy tag
+            # nor OTHER (a hallucinated tag) is still dropped.
+            pillar = c.get("primary_pillar") or OTHER_PILLAR
+            if pillar not in valid_pillars and pillar != OTHER_PILLAR:
                 continue
             db.add(
                 StanceObservation(
@@ -637,7 +768,7 @@ async def render_brief_node(state: AnalystState, config: RunnableConfig) -> dict
     session_local = cfg["session_local"]
     redis_client = cfg.get("redis_client")
     org_id = state["org_id"]
-    run_id = state["run_id"]
+    run_id = cfg.get("run_id", state.get("run_id"))
     week_of_str = state["week_of"]
     classifications = state.get("classifications", [])
     competitor_posts = state.get("competitor_posts", [])
@@ -662,9 +793,11 @@ async def render_brief_node(state: AnalystState, config: RunnableConfig) -> dict
         for c in processed
     ]
 
+    cached_llm_config = cfg.get("llm_config", _UNSET)
+    cached_templates = cfg.get("templates", _UNSET)
     async with session_local() as db:
-        llm_config = await get_org_llm_config(db, org_id)
-        templates = await get_analyst_templates(db, org_id)
+        llm_config = cached_llm_config if cached_llm_config is not _UNSET else await get_org_llm_config(db, org_id)
+        templates = cached_templates if cached_templates is not _UNSET else await get_analyst_templates(db, org_id)
 
     template = templates.get("brief") or ""
     if template:
@@ -718,13 +851,15 @@ async def render_brief_node(state: AnalystState, config: RunnableConfig) -> dict
     model = resolve_model(llm_config)
     call_kwargs = llm_call_kwargs(llm_config)
 
+    breach = await _check_cost_cap(org_id, count_tokens(model, prompt), model, llm_config, redis_client)
+    if breach:
+        await _fail_run_cost_limit(session_local, run_id, org_id, breach)
+        # No IntelBrief is written -- a capped-out run must not leave a
+        # half-written brief behind.
+        return {"terminal": True, "terminal_reason": "cost_limit"}
+
     try:
         brief_md, response = await text_completion(prompt, model, call_kwargs)
-        usage = extract_usage(response)
-        if usage:
-            await record_llm_usage(
-                org_id, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), redis_client
-            )
     except Exception as exc:  # noqa: BLE001 - a brief that failed to generate must not crash the run
         logger.error("Analyst render_brief failed for org=%s run=%s: %s", org_id, run_id, exc)
         brief_md = _fallback_brief(week_of_str, exc)
