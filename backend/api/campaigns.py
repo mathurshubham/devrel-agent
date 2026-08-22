@@ -14,7 +14,7 @@ from backend.schemas import (
 from backend.utils.auth import get_current_session
 from backend.utils.audit import write_audit_log
 from backend.limiter import limiter
-from backend.tasks.scheduler import enqueue_campaign, remove_campaign
+from backend.tasks.scheduler import enqueue_campaign, enqueue_campaign_now, remove_campaign
 
 router = APIRouter(prefix="/api/campaigns", tags=["Campaigns"])
 
@@ -63,8 +63,10 @@ async def create_campaign(
 
     await db.commit()
 
-    # New campaigns start ACTIVE, so put them on the scheduler.
-    await enqueue_campaign(new_campaign.id, new_campaign.poll_frequency_minutes)
+    # New campaigns start ACTIVE, so put them on the scheduler due
+    # immediately -- no reason to make the org wait a full poll cycle for
+    # its first check.
+    await enqueue_campaign_now(new_campaign.id)
 
     return new_campaign
 
@@ -89,6 +91,7 @@ async def update_campaign(
     campaign = await _get_org_campaign(db, org_id, id)
 
     previous_status = campaign.status
+    previous_poll_frequency = campaign.poll_frequency_minutes
     update_data = payload.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(campaign, key, value)
@@ -103,8 +106,14 @@ async def update_campaign(
     await db.commit()
     await db.refresh(campaign)
 
-    # Keep the Redis scheduler ZSET in sync with the campaign's status/frequency.
-    if campaign.status == CampaignStatus.ACTIVE:
+    # Keep the Redis scheduler ZSET in sync with the campaign's status/
+    # frequency -- but only touch it when one of those two actually changed,
+    # so an unrelated field edit (e.g. name, keywords) doesn't reset an
+    # in-flight poll schedule.
+    status_changed = campaign.status != previous_status
+    frequency_changed = campaign.poll_frequency_minutes != previous_poll_frequency
+
+    if campaign.status == CampaignStatus.ACTIVE and (status_changed or frequency_changed):
         await enqueue_campaign(campaign.id, campaign.poll_frequency_minutes)
     elif previous_status == CampaignStatus.ACTIVE and campaign.status != CampaignStatus.ACTIVE:
         await remove_campaign(campaign.id)
