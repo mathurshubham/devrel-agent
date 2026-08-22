@@ -44,7 +44,6 @@ import {
     useUnconfirmDraft,
     useRejectDraft,
     useIgnoreDraft,
-    OpenCopyResponse,
 } from "@/hooks/use-drafts";
 
 interface ReviewSheetProps {
@@ -67,7 +66,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
 
     const [editedText, setEditedText] = React.useState(draft.ai_draft_text);
     const [savedText, setSavedText] = React.useState(draft.ai_draft_text);
-    const [copyPayload, setCopyPayload] = React.useState<OpenCopyResponse | null>(null);
+    const [lockedByOther, setLockedByOther] = React.useState(false);
     const [localStatus, setLocalStatus] = React.useState<DraftStatus>(draft.status);
     const [copied, setCopied] = React.useState(false);
     const [liveUrl, setLiveUrl] = React.useState("");
@@ -77,7 +76,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
 
     const { mutate: lock } = useLockDraft();
     const { mutate: updateDraft, isPending: isSaving } = useUpdateDraft();
-    const { mutate: openCopy, isPending: isPreparingCopy } = useOpenCopyDraft();
+    const { mutate: openCopy } = useOpenCopyDraft();
     const { mutate: confirmPosted, isPending: isConfirming } = useConfirmPosted();
     const { mutate: unconfirm, isPending: isUnconfirming } = useUnconfirmDraft();
     const { mutate: rejectDraft, isPending: isRejecting } = useRejectDraft();
@@ -86,42 +85,40 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     const isBusy = isSaving || isConfirming || isUnconfirming || isRejecting || isIgnoring;
     const isDirty = editedText !== savedText;
 
-    // Reset & lock + prefetch clipboard payload whenever a new draft is opened.
+    // Reset local state whenever a new draft is opened; lock only drafts
+    // that are actually reviewable. Viewing must never mutate server state,
+    // so the clipboard payload is derived locally from the draft itself —
+    // POST /open-copy fires only from the real Open & Copy click.
     React.useEffect(() => {
         if (!isOpen || !draft?.id) return;
         setEditedText(draft.ai_draft_text);
         setSavedText(draft.ai_draft_text);
         setLocalStatus(draft.status);
-        setCopyPayload(null);
+        setLockedByOther(false);
         setLiveUrl(draft.live_url || "");
         setShowReject(false);
         setRejectReason(null);
         setRejectNote("");
 
-        lock(draft.id, {
-            onError: (err: any) => toast.error(`Could not lock draft: ${err.message}`),
-        });
-        openCopy(draft.id, {
-            onSuccess: (data) => setCopyPayload(data),
-            onError: () => {
-                // Non-fatal: user can still retry via the Open & Copy button.
-            },
-        });
+        if (draft.status === "PENDING") {
+            lock(draft.id, {
+                onError: (err: any) => {
+                    setLockedByOther(true);
+                    toast.error(`Draft is locked by another reviewer: ${err.message}`);
+                },
+            });
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [draft?.id, isOpen]);
 
-    // Autosave the edited draft text, then refresh the cached clipboard
-    // payload so the click handler always has fresh, already-fetched text.
+    // Autosave the edited draft text.
     React.useEffect(() => {
-        if (!isOpen || !isDirty) return;
+        if (!isOpen || !isDirty || lockedByOther) return;
         const timer = setTimeout(() => {
             updateDraft(
                 { id: draft.id, ai_draft_text: editedText },
                 {
-                    onSuccess: () => {
-                        setSavedText(editedText);
-                        openCopy(draft.id, { onSuccess: (data) => setCopyPayload(data) });
-                    },
+                    onSuccess: () => setSavedText(editedText),
                     onError: (err: any) => toast.error(`Autosave failed: ${err.message}`),
                 }
             );
@@ -130,30 +127,39 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [editedText]);
 
-    const copyReady = !!copyPayload && !isDirty && !isSaving && !isPreparingCopy;
+    const clipboardText = savedText;
+    const targetUrl = draft.reply_target_url || draft.url;
+    const copyReady = !isDirty && !isSaving && !lockedByOther;
 
     // This must stay synchronous: no awaits between the click and the two
     // browser calls, or Chrome/Safari silently drop the clipboard write.
+    // The server transition to AWAITING_CONFIRM is recorded right after.
     const handleOpenAndCopy = () => {
-        if (isDirty) {
+        if (lockedByOther) {
+            toast.error("This draft is locked by another reviewer.");
+            return;
+        }
+        if (isDirty || isSaving) {
             toast.error("Saving your edits — try again in a moment.");
             return;
         }
-        if (!copyPayload) {
-            toast.error("Clipboard text isn't ready yet — try again in a moment.");
-            openCopy(draft.id, { onSuccess: (data) => setCopyPayload(data) });
-            return;
+        navigator.clipboard.writeText(clipboardText);
+        if (targetUrl) {
+            window.open(targetUrl, "_blank", "noopener,noreferrer");
         }
-        navigator.clipboard.writeText(copyPayload.clipboard_text);
-        window.open(copyPayload.reply_target_url, "_blank", "noopener,noreferrer");
         setLocalStatus("AWAITING_CONFIRM");
-        queryClient.invalidateQueries({ queryKey: ["drafts"] });
+        openCopy(draft.id, {
+            onSuccess: () => queryClient.invalidateQueries({ queryKey: ["drafts"] }),
+            onError: (err: any) => {
+                setLocalStatus(draft.status);
+                toast.error(`Copied, but couldn't record the transition: ${err.message}. Retry Open & Copy.`);
+            },
+        });
         toast.success("Copied to clipboard. Paste, submit, then confirm here.");
     };
 
     const handleCopyOnly = () => {
-        if (!copyPayload) return;
-        navigator.clipboard.writeText(copyPayload.clipboard_text);
+        navigator.clipboard.writeText(clipboardText);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
         toast.success("Draft copied to clipboard");
@@ -235,7 +241,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOpen, isBusy, localStatus, copyPayload, isDirty]);
+    }, [isOpen, isBusy, localStatus, lockedByOther, isDirty]);
 
     return (
         <Sheet open={isOpen} onOpenChange={onOpenChange}>
@@ -427,7 +433,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                             <h3 className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
                                 <Zap className="h-3 w-3 animate-pulse text-primary fill-primary/20" /> Draft Editor
                             </h3>
-                            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCopyOnly} disabled={!copyPayload}>
+                            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCopyOnly} disabled={lockedByOther}>
                                 {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
                             </Button>
                         </div>
