@@ -6,9 +6,11 @@ from typing import List
 from backend.database import get_db
 from backend.models import SubredditSafetyProfile
 from backend.schemas import SubredditSafetyProfileCreate, SubredditSafetyProfileSchema
-from backend.api.org import get_current_session
+from backend.utils.auth import get_current_session
+from backend.utils.audit import write_audit_log
 
 router = APIRouter(prefix="/api/safety", tags=["Safety Profiles"])
+
 
 @router.get("/", response_model=List[SubredditSafetyProfileSchema])
 async def list_safety_profiles(
@@ -22,6 +24,7 @@ async def list_safety_profiles(
     )
     return result.scalars().all()
 
+
 @router.post("/", response_model=SubredditSafetyProfileSchema)
 async def create_safety_profile(
     payload: SubredditSafetyProfileCreate,
@@ -30,18 +33,17 @@ async def create_safety_profile(
 ):
     """Create a new safety profile for a subreddit."""
     org_id = session["org_id"]
-    
-    # Check if exists
+
     existing = await db.execute(
         select(SubredditSafetyProfile).where(
             SubredditSafetyProfile.org_id == org_id,
-            SubredditSafetyProfile.subreddit_name == payload.subreddit_name
+            SubredditSafetyProfile.subreddit == payload.subreddit
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Safety profile for {payload.subreddit_name} already exists."
+            detail=f"Safety profile for {payload.subreddit} already exists."
         )
 
     profile = SubredditSafetyProfile(
@@ -49,9 +51,19 @@ async def create_safety_profile(
         org_id=org_id
     )
     db.add(profile)
+    await db.flush()
+
+    await write_audit_log(
+        db, org_id,
+        action='SAFETY_PROFILE_CREATED',
+        details={'subreddit': payload.subreddit},
+        user_id=session["user_id"]
+    )
+
     await db.commit()
     await db.refresh(profile)
     return profile
+
 
 @router.put("/{profile_id}", response_model=SubredditSafetyProfileSchema)
 async def update_safety_profile(
@@ -62,7 +74,7 @@ async def update_safety_profile(
 ):
     """Update an existing safety profile."""
     org_id = session["org_id"]
-    
+
     result = await db.execute(
         select(SubredditSafetyProfile).where(
             SubredditSafetyProfile.id == profile_id,
@@ -76,9 +88,17 @@ async def update_safety_profile(
     for key, value in payload.model_dump().items():
         setattr(profile, key, value)
 
+    await write_audit_log(
+        db, org_id,
+        action='SAFETY_PROFILE_UPDATED',
+        details={'profile_id': profile_id},
+        user_id=session["user_id"]
+    )
+
     await db.commit()
     await db.refresh(profile)
     return profile
+
 
 @router.delete("/{profile_id}")
 async def delete_safety_profile(
@@ -88,7 +108,24 @@ async def delete_safety_profile(
 ):
     """Delete a safety profile."""
     org_id = session["org_id"]
-    
+
+    result = await db.execute(
+        select(SubredditSafetyProfile).where(
+            SubredditSafetyProfile.id == profile_id,
+            SubredditSafetyProfile.org_id == org_id
+        )
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    await write_audit_log(
+        db, org_id,
+        action='SAFETY_PROFILE_DELETED',
+        details={'profile_id': profile_id, 'subreddit': profile.subreddit},
+        user_id=session["user_id"]
+    )
+
     await db.execute(
         delete(SubredditSafetyProfile).where(
             SubredditSafetyProfile.id == profile_id,
