@@ -25,9 +25,9 @@ services:
     ports:
       - "8000:8000" # <--- MUST ADD THIS LINE
     command: >
-      sh -c 'alembic upgrade head &&
-             python seed.py &&
-             uvicorn main:app --host 0.0.0.0 --port 8000
+      sh -c 'cd backend && alembic upgrade head && cd .. &&
+             python -m backend.seed &&
+             uvicorn backend.main:app --host 0.0.0.0 --port 8000
                --proxy-headers --forwarded-allow-ips="*"'
     env_file: .env
     depends_on:
@@ -36,31 +36,25 @@ services:
 
   worker_scraper:
     build: ./backend
-    command: celery -A tasks worker -Q scraper --concurrency=4 --loglevel=info
+    command: celery -A backend.celery_app worker -Q scraper --concurrency=4 --loglevel=info
     env_file: .env
     depends_on: [ backend ]
 
   worker_langgen:
     build: ./backend
-    command: celery -A tasks worker -Q langgen --concurrency=8 --loglevel=info
-    env_file: .env
-    depends_on: [ backend ]
-
-  worker_publish:
-    build: ./backend
-    command: celery -A tasks worker -Q praw_publish --concurrency=2 --loglevel=info
+    command: celery -A backend.celery_app worker -Q langgen --concurrency=8 --loglevel=info
     env_file: .env
     depends_on: [ backend ]
 
   worker_maintenance:
     build: ./backend
-    command: celery -A tasks worker -Q maintenance --concurrency=1 --loglevel=info
+    command: celery -A backend.celery_app worker -Q maintenance --concurrency=1 --loglevel=info
     env_file: .env
     depends_on: [ backend ]
 
   beat:
     build: ./backend
-    command: celery -A tasks beat --loglevel=info
+    command: celery -A backend.celery_app beat --loglevel=info
     env_file: .env
     depends_on: [ worker_maintenance ]
 
