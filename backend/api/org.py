@@ -10,7 +10,8 @@ import redis.asyncio as redis
 from backend.database import get_db
 from backend.models import OrgLLMConfig, OrgPersona, AuditLog, Campaign, CampaignStatus
 from backend.schemas import (
-    LLMConfigUpdate, PersonaUpdate, AuditLogSchema, OrgUsageSchema, ALLOWED_LLM_PROVIDERS,
+    LLMConfigUpdate, PersonaUpdate, PersonaResponse, AuditLogSchema, OrgUsageSchema,
+    ALLOWED_LLM_PROVIDERS,
 )
 from backend.utils.tokenizer import (
     count_tokens,
@@ -196,6 +197,28 @@ async def update_llm_config(
 
     await db.commit()
     return {"status": "success", "model_changed": model_changed}
+
+
+@router.get("/persona", response_model=PersonaResponse)
+async def get_persona(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Fetch the organization's persona (master context, rulesets, tone
+    guidelines). 404s when the org hasn't saved one yet -- the frontend
+    treats that as an empty persona to seed the initial-creation form.
+    """
+    org_id = session["org_id"]
+
+    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
+    result = await db.execute(stmt)
+    persona = result.scalar_one_or_none()
+
+    if not persona:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Persona not configured")
+
+    return persona
 
 
 @router.patch("/persona")
