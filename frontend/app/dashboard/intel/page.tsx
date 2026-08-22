@@ -193,7 +193,7 @@ export default function IntelPage() {
                             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                         </div>
                     ) : (
-                        <PillarForecastChart data={forecast || []} />
+                        <PillarForecastChart data={forecast ?? null} />
                     )}
                 </TabsContent>
 

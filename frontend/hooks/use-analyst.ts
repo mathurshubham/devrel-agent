@@ -26,15 +26,19 @@ export interface IntelBrief {
     content_md: string;
 }
 
-export interface ForecastWeek {
-    week_of: string;
-    count: number;
+export interface PillarMomentumRow {
+    pillar: string;
+    series: number[];
+    /** Present on trending/declining rows only -- week-over-week delta. */
+    delta?: number;
 }
 
 export interface PillarForecast {
-    pillar: string;
-    weeks: ForecastWeek[];
-    momentum: number;
+    weeks_analyzed: string[];
+    trending: PillarMomentumRow[];
+    declining: PillarMomentumRow[];
+    stable: PillarMomentumRow[];
+    recommended_focus: string[];
 }
 
 export type WatchlistTier = 1 | 2;
@@ -128,7 +132,7 @@ export function usePillarForecast() {
     const api = useApi();
     return useQuery({
         queryKey: ["analyst-forecast"],
-        queryFn: async (): Promise<PillarForecast[]> => {
+        queryFn: async (): Promise<PillarForecast> => {
             const { data } = await api.get("/api/analyst/forecast");
             return data;
         },
