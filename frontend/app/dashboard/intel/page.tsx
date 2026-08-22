@@ -149,9 +149,6 @@ export default function IntelPage() {
                                         }`}
                                     >
                                         <div className="font-mono text-[11px]">Week of {new Date(b.week_of).toLocaleDateString()}</div>
-                                        <div className="text-[10px] opacity-60">
-                                            {new Date(b.created_at).toLocaleString()}
-                                        </div>
                                     </button>
                                 ))
                             )}

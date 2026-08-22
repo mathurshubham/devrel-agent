@@ -61,7 +61,7 @@ function AuthorsPanel() {
                 <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Watch-list authors</h2>
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Tier 1/2 names the Analyst triage step weighs when scoring relevance and signal tier.
+                Tier 1-3 names the Analyst triage step weighs when scoring relevance and signal tier.
             </p>
 
             <div className="flex flex-col gap-2">
@@ -79,7 +79,7 @@ function AuthorsPanel() {
                 />
                 <div className="flex items-center gap-2">
                     <div className="flex rounded-md border border-border/40 overflow-hidden">
-                        {([1, 2] as WatchlistTier[]).map((t) => (
+                        {([1, 2, 3] as WatchlistTier[]).map((t) => (
                             <button
                                 key={t}
                                 type="button"
@@ -108,12 +108,14 @@ function AuthorsPanel() {
                     {authors.map((author) => (
                         <div key={author.id} className="flex items-center justify-between rounded-md border border-border/40 bg-background p-2.5">
                             <div className="flex items-center gap-2 min-w-0">
-                                <Badge variant="outline" className="text-[9px] font-mono py-0 h-4 shrink-0">T{author.tier}</Badge>
+                                <Badge variant="outline" className="text-[9px] font-mono py-0 h-4 shrink-0">T{author.tier ?? "-"}</Badge>
                                 <div className="flex flex-col min-w-0">
                                     <span className="text-sm font-medium truncate">{author.name}</span>
-                                    <a href={author.profile_url} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground font-mono truncate hover:underline">
-                                        {author.profile_url}
-                                    </a>
+                                    {author.profile_url && (
+                                        <a href={author.profile_url} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground font-mono truncate hover:underline">
+                                            {author.profile_url}
+                                        </a>
+                                    )}
                                 </div>
                             </div>
                             <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 shrink-0" onClick={() => handleDelete(author.id)}>
@@ -214,12 +216,14 @@ function CompetitorsPanel() {
                     {competitors.map((c) => (
                         <div key={c.id} className="flex items-center justify-between rounded-md border border-border/40 bg-background p-2.5">
                             <div className="flex items-center gap-2 min-w-0">
-                                <Badge variant="outline" className="text-[9px] font-mono py-0 h-4 shrink-0">{c.platform}</Badge>
+                                <Badge variant="outline" className="text-[9px] font-mono py-0 h-4 shrink-0">{c.platform ?? "—"}</Badge>
                                 <div className="flex flex-col min-w-0">
                                     <span className="text-sm font-medium truncate">{c.name}</span>
-                                    <a href={c.url} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground font-mono truncate hover:underline">
-                                        {c.url}
-                                    </a>
+                                    {c.url && (
+                                        <a href={c.url} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground font-mono truncate hover:underline">
+                                            {c.url}
+                                        </a>
+                                    )}
                                 </div>
                             </div>
                             <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 shrink-0" onClick={() => handleDelete(c.id)}>

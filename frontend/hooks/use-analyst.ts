@@ -16,8 +16,8 @@ export interface AnalystRunResponse {
 
 export interface IntelBriefSummary {
     id: number;
+    org_id: number;
     week_of: string;
-    created_at: string;
 }
 
 export interface IntelBrief {
@@ -41,27 +41,29 @@ export interface PillarForecast {
     recommended_focus: string[];
 }
 
-export type WatchlistTier = 1 | 2;
+export type WatchlistTier = 1 | 2 | 3;
 
 export interface TargetAuthor {
     id: number;
+    org_id: number;
     name: string;
-    tier: WatchlistTier;
-    profile_url: string;
+    tier: WatchlistTier | null;
+    profile_url?: string | null;
 }
 
-export type TargetAuthorPayload = Omit<TargetAuthor, "id">;
+export type TargetAuthorPayload = Omit<TargetAuthor, "id" | "org_id">;
 
 export type CompetitorPlatform = "REDDIT" | "LINKEDIN" | "TWITTER";
 
 export interface Competitor {
     id: number;
-    platform: CompetitorPlatform;
+    org_id: number;
+    platform: CompetitorPlatform | null;
     name: string;
-    url: string;
+    url?: string | null;
 }
 
-export type CompetitorPayload = Omit<Competitor, "id">;
+export type CompetitorPayload = Omit<Competitor, "id" | "org_id">;
 
 export function useAnalystStatus() {
     const api = useApi();
