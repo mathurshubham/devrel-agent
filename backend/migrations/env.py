@@ -18,14 +18,19 @@ if config.config_file_name is not None:
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from models import Base
+# backend/migrations/env.py -> repo root is three levels up.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from backend.models import Base
+
+# Prefer DATABASE_URL from the environment (matches backend/database.py); fall
+# back to the sqlalchemy.url configured in alembic.ini for local dev.
+if os.environ.get("DATABASE_URL"):
+    config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
