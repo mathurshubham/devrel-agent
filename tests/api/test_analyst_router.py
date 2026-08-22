@@ -175,6 +175,13 @@ async def test_create_author_round_trips(client):
     assert isinstance(body["id"], int)
 
 
+async def test_create_author_defaults_tier_to_1_when_omitted(client):
+    async with client as ac:
+        resp = await ac.post("/api/analyst/authors", json={"name": "No Tier Given"})
+    assert resp.status_code == 201
+    assert resp.json()["tier"] == 1
+
+
 async def test_delete_author_404_when_missing(client):
     async with client as ac:
         resp = await ac.delete("/api/analyst/authors/999")

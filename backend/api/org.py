@@ -8,7 +8,7 @@ from typing import List
 import redis.asyncio as redis
 
 from backend.database import get_db
-from backend.models import OrgLLMConfig, OrgPersona, OrgSettings, AuditLog, Campaign, CampaignStatus
+from backend.models import OrgLLMConfig, OrgPersona, OrgSettings, AuditLog, Campaign, CampaignStatus, User, UserRole
 from backend.schemas import (
     LLMConfigUpdate, PersonaUpdate, PersonaResponse, AuditLogSchema, OrgUsageSchema,
     OrgSettingsResponse, OrgSettingsUpdate,
@@ -33,6 +33,19 @@ router = APIRouter(prefix="/api/org", tags=["Organization"])
 # asyncio.run() event loop and need a fresh client per invocation instead.
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 _redis_client = redis.from_url(_REDIS_URL)
+
+
+async def _require_org_admin(db: AsyncSession, session: dict) -> None:
+    """Org settings now control real spend (``apify_monthly_budget_usd``)
+    and feature opt-ins with cost implications (``analyst_enabled``) --
+    writing them requires the org ADMIN role (or the platform SUPER_ADMIN
+    role on the caller's own User row), not any MEMBER."""
+    if session.get("role") == UserRole.ADMIN.value:
+        return
+    user = await db.get(User, session["user_id"])
+    if user and user.role == UserRole.SUPER_ADMIN:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
 
 
 @router.get("/usage", response_model=OrgUsageSchema)
@@ -312,6 +325,7 @@ async def update_org_settings(
 ):
     """Partial update of the org's settings; creates the row on first write."""
     org_id = session["org_id"]
+    await _require_org_admin(db, session)
 
     stmt = select(OrgSettings).where(OrgSettings.org_id == org_id)
     result = await db.execute(stmt)

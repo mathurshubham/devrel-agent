@@ -271,7 +271,10 @@ class TargetAuthorBase(BaseModel):
 
 
 class TargetAuthorCreate(TargetAuthorBase):
-    pass
+    # A newly added watch-list author defaults to Tier 1 ("always surface"
+    # -- PRD V7 §5.6/§9) rather than untiered; an org that wants a lower
+    # tier can still say so explicitly.
+    tier: Optional[int] = Field(default=1, ge=1, le=3)
 
 
 class TargetAuthorResponse(TargetAuthorBase):
