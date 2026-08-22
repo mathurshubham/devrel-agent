@@ -63,8 +63,18 @@ def scheduler_tick(self):
                         )
 
                         if is_active:
-                            logger.info(f"Dispatching campaign {campaign_id} to scraper queue.")
-                            celery_app.send_task("backend.tasks.workers.scraper_task", args=[campaign_id])
+                            # PRD V7 §5.3: the whole reply pipeline (ingest
+                            # through persist_gate) runs as one LangGraph
+                            # run inside a single langgen task -- there is
+                            # no separate scraper hop to dispatch to.
+                            # scheduled_ts becomes part of the pipeline's
+                            # checkpoint thread_id (backend.pipeline.graph),
+                            # so a Celery retry of this exact task resumes
+                            # instead of re-ingesting.
+                            logger.info(f"Dispatching campaign {campaign_id} to langgen queue.")
+                            celery_app.send_task(
+                                "backend.tasks.workers.langgen_task", args=[campaign_id, now]
+                            )
                         else:
                             logger.info(
                                 f"Campaign {campaign_id} skipped "

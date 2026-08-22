@@ -64,13 +64,31 @@ async def test_run_actor_returns_dataset_items():
 
 
 @respx.mock
-async def test_run_start_sends_input_as_json_body_and_token_as_query_param():
+async def test_run_start_sends_input_as_json_body_and_token_as_bearer_header():
     start = _mock_apify(["SUCCEEDED"], [])
     await ApifyRunner("apify_api_secret").run_actor(ACTOR, {"keyword": "evals", "limit": 30})
 
     request = start.calls[0].request
-    assert request.url.params["token"] == "apify_api_secret"
+    # The token must travel in the Authorization header, never in the URL
+    # query string -- a query param ends up in httpx request reprs, proxy
+    # access logs, and any traceback/log line that echoes the request URL
+    # back verbatim.
+    assert request.headers["authorization"] == "Bearer apify_api_secret"
+    assert "token" not in request.url.params
+    assert "apify_api_secret" not in str(request.url)
     assert b'"keyword"' in request.content
+
+
+@respx.mock
+async def test_poll_and_items_fetch_also_send_the_bearer_header_not_a_query_token():
+    _mock_apify(["RUNNING", "SUCCEEDED"], [{"id": "1"}])
+    await ApifyRunner("apify_api_secret").run_actor(ACTOR, {})
+
+    poll_request = respx.calls[1].request
+    items_request = respx.calls[-1].request
+    for request in (poll_request, items_request):
+        assert request.headers["authorization"] == "Bearer apify_api_secret"
+        assert "apify_api_secret" not in str(request.url)
 
 
 @respx.mock
