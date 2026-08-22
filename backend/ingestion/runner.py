@@ -89,6 +89,13 @@ class ApifyRunner:
         self.timeout_seconds = timeout_seconds
         self.poll_interval = poll_interval
         self._client = client
+        # Apify accepts the vault token as either a `?token=` query param or
+        # an `Authorization: Bearer` header -- the header keeps it out of
+        # every request's URL, so it can never end up in an httpx request
+        # repr, a proxy access log, or (the actual incident this fixes) a
+        # raw exception message/traceback that gets logged verbatim
+        # somewhere the query string is echoed back.
+        self._auth_headers = {"Authorization": f"Bearer {token}"}
 
     # -- HTTP plumbing -------------------------------------------------
 
@@ -133,12 +140,10 @@ class ApifyRunner:
     async def _run(
         self, client: httpx.AsyncClient, actor_id: str, actor_input: dict
     ) -> list[dict]:
-        params = {"token": self.token}
-
         run_resp = await self._post_with_retry(
             client,
             f"{APIFY_BASE}/acts/{actor_path(actor_id)}/runs",
-            params=params,
+            headers=self._auth_headers,
             json=actor_input,
             timeout=30,
         )
@@ -152,13 +157,14 @@ class ApifyRunner:
             console_url_for(run_id),
         )
 
-        status = await self._poll_until_terminal(client, run_id, actor_id, params)
+        status = await self._poll_until_terminal(client, run_id, actor_id)
         if status != "SUCCEEDED":
             raise ApifyRunError(run_id, status, actor_id)
 
         items_resp = await client.get(
             f"{APIFY_BASE}/datasets/{dataset_id}/items",
-            params={**params, "format": "json"},
+            params={"format": "json"},
+            headers=self._auth_headers,
             timeout=30,
         )
         items_resp.raise_for_status()
@@ -176,7 +182,6 @@ class ApifyRunner:
         client: httpx.AsyncClient,
         run_id: str,
         actor_id: str,
-        params: dict,
     ) -> str:
         elapsed = 0
         status = "READY"
@@ -184,7 +189,7 @@ class ApifyRunner:
             await asyncio.sleep(self.poll_interval)
             elapsed += self.poll_interval
             status_resp = await client.get(
-                f"{APIFY_BASE}/actor-runs/{run_id}", params=params, timeout=10
+                f"{APIFY_BASE}/actor-runs/{run_id}", headers=self._auth_headers, timeout=10
             )
             status_resp.raise_for_status()
             status = status_resp.json()["data"]["status"]
