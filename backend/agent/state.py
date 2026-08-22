@@ -12,6 +12,7 @@ class AgentState(TypedDict):
     that hand-off.
     """
     campaign_id: int
+    org_id: int
     platform: PlatformEnum
     post_id: str
     url: str

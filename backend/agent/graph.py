@@ -59,10 +59,11 @@ workflow.add_edge("confidence_gate", END)
 app = workflow.compile()
 
 
-async def run_agent_pipeline(campaign_id: int, platform, post_id: str) -> dict:
+async def run_agent_pipeline(campaign_id: int, org_id: int, platform, post_id: str) -> dict:
     """Main entry point for the LangGraph pipeline. Initializes state and invokes the graph."""
     initial_state: AgentState = {
         "campaign_id": campaign_id,
+        "org_id": org_id,
         "platform": platform,
         "post_id": post_id,
         "url": "",
