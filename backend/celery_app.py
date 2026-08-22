@@ -1,6 +1,10 @@
+import logging
 import os
 from celery import Celery
+from celery.signals import worker_process_init
 from kombu import Queue
+
+logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -53,6 +57,26 @@ celery_app.conf.update(
         },
     },
 )
+
+@worker_process_init.connect
+def _setup_checkpointer_tables(**kwargs):
+    """Create the langgraph-checkpoint-postgres tables if they don't exist.
+
+    Runs once per worker process on startup, before any langgen_task can
+    invoke graph #1. ``setup()`` is idempotent, so this is safe across
+    however many worker processes start concurrently. A Postgres outage at
+    worker boot must not crash the worker -- the first real pipeline run
+    will surface the same failure loudly instead.
+    """
+    import asyncio
+
+    from backend.pipeline.graph import setup_checkpointer_tables
+
+    try:
+        asyncio.run(setup_checkpointer_tables())
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not set up langgraph checkpoint tables at worker startup")
+
 
 if __name__ == "__main__":
     celery_app.start()
