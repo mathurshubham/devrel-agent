@@ -3,20 +3,22 @@ import { useApi } from "@/hooks/use-api";
 
 export type Platform = "REDDIT" | "LINKEDIN" | "TWITTER";
 
-export interface AngleStat {
+export interface AngleLeaderboardRow {
     platform: Platform;
-    angle_name: string;
+    angle: string;
     drafted: number;
     posted: number;
     acceptance_rate: number;
     avg_engagement: number;
 }
 
-export interface PlatformStat {
+export interface PlatformPerformanceRow {
     platform: Platform;
     drafted: number;
     posted: number;
+    rejected: number;
     acceptance_rate: number;
+    avg_engagement: number;
 }
 
 export interface AnalyticsTotals {
@@ -26,17 +28,29 @@ export interface AnalyticsTotals {
     reject_reasons: Record<string, number>;
 }
 
+export interface LlmSpend {
+    daily_tokens: number;
+    monthly_cost_usd: number;
+    max_daily_tokens: number | null;
+    max_monthly_cost_usd: number | null;
+}
+
+export interface ApifySpend {
+    month: string;
+    spent_usd: number;
+    budget_usd: number;
+    utilization_pct: number;
+}
+
 export interface AnalyticsSpend {
-    llm_month_usd: number;
-    llm_cap_usd: number | null;
-    apify_month_usd: number;
-    apify_budget_usd: number;
+    llm: LlmSpend;
+    apify: ApifySpend;
 }
 
 export interface AnalyticsSummary {
-    angles: AngleStat[];
-    platforms: PlatformStat[];
     totals: AnalyticsTotals;
+    angle_leaderboard: AngleLeaderboardRow[];
+    platform_performance: PlatformPerformanceRow[];
     spend: AnalyticsSpend;
 }
 

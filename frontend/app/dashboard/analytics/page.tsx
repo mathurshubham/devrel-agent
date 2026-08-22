@@ -36,8 +36,8 @@ export default function AnalyticsPage() {
 
     const totals = data?.totals;
     const spend = data?.spend;
-    const platforms = data?.platforms || [];
-    const angles = data?.angles || [];
+    const platforms = data?.platform_performance || [];
+    const angles = data?.angle_leaderboard || [];
 
     const overallAcceptance = totals && totals.drafted > 0 ? (totals.posted / totals.drafted) * 100 : 0;
     const rejectReasons = totals ? Object.entries(totals.reject_reasons) : [];
@@ -106,8 +106,23 @@ export default function AnalyticsPage() {
                 <div className="flex flex-col gap-3">
                     <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Spend vs. caps</h2>
                     <div className="flex flex-col gap-3">
-                        <SpendMeter label="LLM spend (this month)" usedUsd={spend?.llm_month_usd ?? 0} capUsd={spend?.llm_cap_usd ?? null} />
-                        <SpendMeter label="Apify spend (this month)" usedUsd={spend?.apify_month_usd ?? 0} capUsd={spend?.apify_budget_usd ?? null} />
+                        <SpendMeter
+                            label="LLM spend (this month)"
+                            used={spend?.llm.monthly_cost_usd ?? 0}
+                            cap={spend?.llm.max_monthly_cost_usd ?? null}
+                        />
+                        <SpendMeter
+                            label="LLM tokens (today)"
+                            used={spend?.llm.daily_tokens ?? 0}
+                            cap={spend?.llm.max_daily_tokens ?? null}
+                            unit="tokens"
+                            capLabel="daily cap"
+                        />
+                        <SpendMeter
+                            label="Apify spend (this month)"
+                            used={spend?.apify.spent_usd ?? 0}
+                            cap={spend?.apify.budget_usd ?? null}
+                        />
                     </div>
                 </div>
             </div>
@@ -136,8 +151,16 @@ export default function AnalyticsPage() {
                                         <span className="text-lg font-semibold tabular-nums">{p.posted}</span>
                                     </div>
                                     <div className="flex flex-col">
+                                        <span className="text-[9px] uppercase font-mono text-muted-foreground">Rejected</span>
+                                        <span className="text-lg font-semibold tabular-nums">{p.rejected}</span>
+                                    </div>
+                                    <div className="flex flex-col">
                                         <span className="text-[9px] uppercase font-mono text-muted-foreground">Accept.</span>
                                         <span className="text-lg font-semibold tabular-nums text-primary">{(p.acceptance_rate * 100).toFixed(0)}%</span>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-[9px] uppercase font-mono text-muted-foreground">Avg. Eng.</span>
+                                        <span className="text-lg font-semibold tabular-nums">{p.avg_engagement.toFixed(1)}</span>
                                     </div>
                                 </div>
                             </div>

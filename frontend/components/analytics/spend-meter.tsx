@@ -6,24 +6,33 @@ function barColorFor(pct: number): string {
     return "bg-green-500";
 }
 
+function formatAmount(value: number, unit: "usd" | "tokens"): string {
+    if (unit === "tokens") return value.toLocaleString();
+    return `$${value.toFixed(2)}`;
+}
+
 export function SpendMeter({
     label,
-    usedUsd,
-    capUsd,
+    used,
+    cap,
+    unit = "usd",
+    capLabel = "monthly cap",
 }: {
     label: string;
-    usedUsd: number;
-    capUsd: number | null;
+    used: number;
+    cap: number | null;
+    unit?: "usd" | "tokens";
+    capLabel?: string;
 }) {
-    const hasCap = capUsd !== null && capUsd > 0;
-    const pct = hasCap ? Math.min(100, (usedUsd / (capUsd as number)) * 100) : 0;
+    const hasCap = cap !== null && cap > 0;
+    const pct = hasCap ? Math.min(100, (used / (cap as number)) * 100) : 0;
 
     return (
         <div className="flex flex-col gap-2 rounded-md border border-border/40 bg-muted/5 p-4">
             <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">{label}</span>
                 <span className="text-xs font-mono text-muted-foreground">
-                    ${usedUsd.toFixed(2)}{hasCap ? ` / $${(capUsd as number).toFixed(2)}` : ""}
+                    {formatAmount(used, unit)}{hasCap ? ` / ${formatAmount(cap as number, unit)}` : ""}
                 </span>
             </div>
             {hasCap ? (
@@ -31,7 +40,7 @@ export function SpendMeter({
                     <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
                         <div className={`h-full ${barColorFor(pct)}`} style={{ width: `${pct}%` }} />
                     </div>
-                    <span className="text-[9px] text-muted-foreground font-mono">{pct.toFixed(0)}% of monthly cap</span>
+                    <span className="text-[9px] text-muted-foreground font-mono">{pct.toFixed(0)}% of {capLabel}</span>
                 </>
             ) : (
                 <span className="text-[9px] text-muted-foreground font-mono uppercase">No cap configured</span>

@@ -12,7 +12,7 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import type { AngleStat, Platform } from "@/hooks/use-analytics";
+import type { AngleLeaderboardRow, Platform } from "@/hooks/use-analytics";
 
 const PLATFORM_STYLES: Record<Platform, string> = {
     REDDIT: "bg-orange-500/10 text-orange-500 border-orange-500/20",
@@ -22,7 +22,7 @@ const PLATFORM_STYLES: Record<Platform, string> = {
 
 type SortKey = "drafted" | "posted" | "acceptance_rate" | "avg_engagement";
 
-export function AngleLeaderboard({ angles, platformFilter }: { angles: AngleStat[]; platformFilter: Platform | "ALL" }) {
+export function AngleLeaderboard({ angles, platformFilter }: { angles: AngleLeaderboardRow[]; platformFilter: Platform | "ALL" }) {
     const [sortKey, setSortKey] = React.useState<SortKey>("acceptance_rate");
     const [sortDesc, setSortDesc] = React.useState(true);
 
@@ -85,13 +85,13 @@ export function AngleLeaderboard({ angles, platformFilter }: { angles: AngleStat
                     </TableHeader>
                     <TableBody>
                         {sorted.map((angle, idx) => (
-                            <TableRow key={`${angle.platform}-${angle.angle_name}-${idx}`} className="border-border/40">
+                            <TableRow key={`${angle.platform}-${angle.angle}-${idx}`} className="border-border/40">
                                 <TableCell>
                                     <Badge variant="outline" className={`text-[9px] font-bold py-0 h-4 ${PLATFORM_STYLES[angle.platform] || ""}`}>
                                         {angle.platform}
                                     </Badge>
                                 </TableCell>
-                                <TableCell className="text-sm font-medium">{angle.angle_name}</TableCell>
+                                <TableCell className="text-sm font-medium">{angle.angle}</TableCell>
                                 <TableCell className="font-mono text-xs">{angle.drafted}</TableCell>
                                 <TableCell className="font-mono text-xs">{angle.posted}</TableCell>
                                 <TableCell className="font-mono text-xs font-semibold text-primary">
