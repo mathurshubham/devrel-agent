@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, update
 import litellm
@@ -8,43 +8,50 @@ from typing import List
 import redis.asyncio as redis
 
 from backend.database import get_db
-from backend.models import OrgLLMConfig, OrgPersona, Organization, AuditLog, Campaign, CampaignStatus, RedditAccount
-from backend.schemas import LLMConfigUpdate, PersonaUpdate, RedditAccountUpdate, AuditLogSchema, OrgUsageSchema
+from backend.models import OrgLLMConfig, OrgPersona, AuditLog, Campaign, CampaignStatus
+from backend.schemas import (
+    LLMConfigUpdate, PersonaUpdate, PersonaResponse, AuditLogSchema, OrgUsageSchema,
+    ALLOWED_LLM_PROVIDERS,
+)
 from backend.utils.tokenizer import (
-    count_tokens, 
-    update_persona_token_counts, 
-    DEFAULT_MODEL
+    count_tokens,
+    update_persona_token_counts,
+    DEFAULT_MODEL,
 )
 from backend.utils.encryption import encrypt
 from backend.utils.audit import write_audit_log
 from backend.limiter import limiter
 from backend.utils.auth import get_current_session
+from backend.tasks.scheduler import remove_campaign
 
 router = APIRouter(prefix="/api/org", tags=["Organization"])
+
+# FastAPI (uvicorn) runs a single long-lived event loop for the process, so
+# a module-level redis client here is safe -- unlike the Celery task bodies
+# fixed in backend/utils/celery_async.py, which each get their own
+# asyncio.run() event loop and need a fresh client per invocation instead.
+_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+_redis_client = redis.from_url(_REDIS_URL)
+
 
 @router.get("/usage", response_model=OrgUsageSchema)
 async def get_org_usage(
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
-    """
-    Fetch daily token and monthly cost usage from Redis.
-    """
+    """Fetch daily token and monthly cost usage from Redis."""
     org_id = session["org_id"]
-    REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    r = redis.from_url(REDIS_URL)
-    
+
     daily_key = f"llm:tokens:{org_id}:{date.today().isoformat()}"
     month_key = f"llm:cost_usd:{org_id}:{date.today().strftime('%Y-%m')}"
-    
-    daily_tokens = await r.get(daily_key)
-    monthly_cost = await r.get(month_key)
-    
-    # Get limits from DB
+
+    daily_tokens = await _redis_client.get(daily_key)
+    monthly_cost = await _redis_client.get(month_key)
+
     stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
     result = await db.execute(stmt)
     config = result.scalar_one_or_none()
-    
+
     return {
         "daily_tokens": int(daily_tokens or 0),
         "monthly_cost_usd": float(monthly_cost or 0.0),
@@ -52,242 +59,221 @@ async def get_org_usage(
         "max_monthly_cost": config.max_monthly_llm_cost_usd if config else None
     }
 
+
 @router.get("/audit-logs", response_model=List[AuditLogSchema])
 async def get_audit_logs(
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
-    """
-    Fetch the organization's audit log history.
-    """
+    """Fetch the organization's audit log history."""
     org_id = session["org_id"]
     stmt = select(AuditLog).where(AuditLog.org_id == org_id).order_by(desc(AuditLog.timestamp)).limit(100)
     result = await db.execute(stmt)
     return result.scalars().all()
+
 
 @router.post("/kill-switch")
 async def activate_kill_switch(
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
-    """
-    Emergency stop: Pauses all active campaigns for the organization.
-    """
+    """Emergency stop: pauses all active campaigns and removes them from the scheduler ZSET."""
     org_id = session["org_id"]
-    
-    # 1. Pause all active campaigns
+
+    # 1. Find active campaigns so we can also pull them out of the scheduler.
+    result = await db.execute(
+        select(Campaign.id).where(Campaign.org_id == org_id, Campaign.status == CampaignStatus.ACTIVE)
+    )
+    active_campaign_ids = [row[0] for row in result.all()]
+
+    # 2. Pause all active campaigns.
     await db.execute(
         update(Campaign)
         .where(Campaign.org_id == org_id, Campaign.status == CampaignStatus.ACTIVE)
         .values(status=CampaignStatus.PAUSED)
     )
-    
-    # 2. Log it
+
+    # 3. Remove them from the Redis scheduler ZSET so they stop being polled.
+    for campaign_id in active_campaign_ids:
+        await remove_campaign(campaign_id)
+
+    # 4. Audit log — must be flushed before the final commit or it's lost.
     await write_audit_log(
-        db, 
-        org_id, 
+        db,
+        org_id,
         action='KILLSWITCH_ACTIVATED',
-        details={'reason': 'Manual emergency stop triggered via Settings'},
+        details={'reason': 'Manual emergency stop triggered via Settings', 'campaign_ids': active_campaign_ids},
         user_id=session["user_id"]
     )
-    
+
     await db.commit()
     return {"status": "success", "message": "All campaigns have been paused."}
+
 
 @router.get("/status")
 async def get_org_status(
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
-    """
-    Returns connectivity status for LLM providers and Reddit.
-    Used by the Vaults dashboard.
-    """
+    """Returns LLM provider connectivity status. Used by the Vaults dashboard."""
     org_id = session["org_id"]
-    
-    # 1. Check LLM Config
+
     stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
     result = await db.execute(stmt)
     llm_config = result.scalar_one_or_none()
-    
-    # 2. Check Reddit Account
-    stmt = select(RedditAccount).where(
-        RedditAccount.org_id == org_id,
-        RedditAccount.is_active == True,
-        RedditAccount.deleted_at == None
-    ).limit(1)
-    result = await db.execute(stmt)
-    reddit_account = result.scalar_one_or_none()
-    
-    # Determine which LLM provider is connected based on model_name or provider field
-    # For now, we assume if OrgLLMConfig exists, the primary provider is connected.
+
     return {
         "openai_connected": llm_config.provider == "openai" if llm_config else False,
         "anthropic_connected": llm_config.provider == "anthropic" if llm_config else False,
         "gemini_connected": llm_config.provider == "gemini" if llm_config else False,
         "openrouter_connected": llm_config.provider == "openrouter" if llm_config else False,
-        "reddit_username": reddit_account.username if reddit_account else None,
+        "ollama_connected": llm_config.provider == "ollama" if llm_config else False,
+        "custom_connected": llm_config.provider == "custom" if llm_config else False,
         "current_model": llm_config.model_name if llm_config else None,
-        "current_provider": llm_config.provider if llm_config else None
+        "current_provider": llm_config.provider if llm_config else None,
     }
 
+
+@router.patch("/llm-config")
 @limiter.limit("5/minute")
 async def update_llm_config(
     payload: LLMConfigUpdate,
+    request: Request,  # required by slowapi
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     """
-    Update the organization's LLM configuration.
-    If model_name changes, triggers token count recalculation on the persona.
+    Update the organization's LLM configuration. OpenRouter is the default/
+    primary provider. If model_name changes, triggers token count
+    recalculation on the persona.
     """
     org_id = session["org_id"]
-    
-    # 1. Fetch existing config
+
+    if payload.provider not in ALLOWED_LLM_PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"provider must be one of {sorted(ALLOWED_LLM_PROVIDERS)}",
+        )
+    if payload.provider in ("custom", "ollama") and not payload.custom_base_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"custom_base_url is required for provider '{payload.provider}'",
+        )
+
     stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
     result = await db.execute(stmt)
     old_config = result.scalar_one_or_none()
-    
-    model_changed = old_config and old_config.model_name != payload.model_name
 
-    # 2. Update or create config
-    config_data = payload.dict(exclude={"api_key"})
+    model_changed = bool(old_config and old_config.model_name != payload.model_name)
+
+    config_data = payload.model_dump(exclude={"api_key"})
     if payload.api_key:
         config_data["encrypted_api_key"] = encrypt(payload.api_key)
-        # Ensure key version is tracked (Teammate 3)
         config_data["encrypted_with_key_version"] = 1
-    
+
     if old_config:
         for key, value in config_data.items():
             setattr(old_config, key, value)
     else:
         new_config = OrgLLMConfig(**config_data, org_id=org_id)
         db.add(new_config)
-    
+
     await db.flush()
 
-    # 3. Handle model change (Teammate 1: Chicken & Egg Problem)
     if model_changed:
         stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
         result = await db.execute(stmt)
         persona = result.scalar_one_or_none()
-        
+
         if persona:
             update_persona_token_counts(persona, payload.model_name)
             await write_audit_log(
-                db, 
-                org_id, 
+                db,
+                org_id,
                 action='PERSONA_TOKENS_RECALCULATED',
                 details={'new_model': payload.model_name},
                 user_id=session["user_id"]
             )
-    
+
     await db.commit()
     return {"status": "success", "model_changed": model_changed}
+
+
+@router.get("/persona", response_model=PersonaResponse)
+async def get_persona(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Fetch the organization's persona (master context, rulesets, tone
+    guidelines). 404s when the org hasn't saved one yet -- the frontend
+    treats that as an empty persona to seed the initial-creation form.
+    """
+    org_id = session["org_id"]
+
+    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
+    result = await db.execute(stmt)
+    persona = result.scalar_one_or_none()
+
+    if not persona:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Persona not configured")
+
+    return persona
+
 
 @router.patch("/persona")
 @limiter.limit("5/minute")
 async def update_persona(
     payload: PersonaUpdate,
+    request: Request,  # required by slowapi
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     """
     Update organization persona and validate token budget.
-    Rejects save if persona consumes > 80% of model context window (Teammate 4).
+    Rejects save if persona consumes > 80% of the model's context window.
     """
     org_id = session["org_id"]
-    
-    # 1. Determine model for token calculation
+
     stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
     result = await db.execute(stmt)
     llm_config = result.scalar_one_or_none()
-    
-    model = llm_config.model_name if llm_config else DEFAULT_MODEL
-    
+
+    model = llm_config.model_name if (llm_config and llm_config.model_name) else DEFAULT_MODEL
+
     try:
         model_limit = litellm.get_max_tokens(model)
         if not isinstance(model_limit, int):
             model_limit = 4096
-    except:
+    except Exception:
         model_limit = 4096
 
-    # 2. Compute current token overhead
-    ctx_tokens     = count_tokens(model, payload.master_context or '')
-    ruleset_tokens = count_tokens(model, str(payload.rulesets_dos_donts or ''))
-    total          = ctx_tokens + ruleset_tokens
+    combined_text = (payload.master_context or '') + str(payload.rulesets_dos_donts or '')
+    total = count_tokens(model, combined_text)
 
-    # 3. Guardrail check
     if total > model_limit * 0.80:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f'Your Master Context + Rulesets use {total:,} tokens, which exceeds '
                 f'80% of {model}\'s {model_limit:,}-token limit. '
-                f'Reduce your content to leave room for Reddit thread context.'
+                f'Reduce your content to leave room for source-platform context.'
             )
         )
 
-    # 4. Save persona and pre-computed counts
     stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
     result = await db.execute(stmt)
     persona = result.scalar_one_or_none()
-    
-    persona_data = payload.dict()
+
+    persona_data = payload.model_dump()
     if persona:
         for key, value in persona_data.items():
             setattr(persona, key, value)
     else:
         persona = OrgPersona(**persona_data, org_id=org_id)
         db.add(persona)
-    
-    persona.master_context_tokens = ctx_tokens
-    persona.rulesets_token_count = ruleset_tokens
-    
+
+    persona.master_context_token_count = total
+
     await db.commit()
     return {"status": "success", "tokens_used": total}
-
-@router.post("/reddit")
-@limiter.limit("5/minute")
-async def save_reddit_credentials(
-    payload: RedditAccountUpdate,
-    db: AsyncSession = Depends(get_db),
-    session: dict = Depends(get_current_session)
-):
-    """
-    Save or update Reddit API credentials for the organization.
-    Symmetrically encrypts the secret and refresh token at rest.
-    """
-    org_id = session["org_id"]
-    
-    # 1. Fetch existing account
-    stmt = select(RedditAccount).where(
-        RedditAccount.org_id == org_id,
-        RedditAccount.deleted_at == None
-    )
-    result = await db.execute(stmt)
-    account = result.scalar_one_or_none()
-    
-    # 2. Encrypt sensitive fields
-    encrypted_secret = encrypt(payload.client_secret)
-    encrypted_refresh = encrypt(payload.refresh_token) if payload.refresh_token else None
-    
-    if account:
-        account.username = payload.username
-        account.client_id = payload.client_id
-        account.encrypted_secret = encrypted_secret
-        account.encrypted_refresh_token = encrypted_refresh
-        account.is_active = True # Re-activate if it was inactive
-    else:
-        new_account = RedditAccount(
-            org_id=org_id,
-            username=payload.username,
-            client_id=payload.client_id,
-            encrypted_secret=encrypted_secret,
-            encrypted_refresh_token=encrypted_refresh,
-            is_active=True
-        )
-        db.add(new_account)
-    
-    await db.commit()
-    return {"status": "success", "message": "Reddit credentials saved"}
