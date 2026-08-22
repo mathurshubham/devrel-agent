@@ -1,20 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useApi } from "@/hooks/use-api";
+
+export type Platform = "REDDIT" | "LINKEDIN" | "TWITTER";
 
 export interface Campaign {
     id: number;
+    platform: Platform;
     name: string;
+    value: string;
     status: "ACTIVE" | "PAUSED" | "ARCHIVED";
-    subreddit_name: string;
-    keywords: string[];
     poll_frequency_minutes: number;
-    comment_fetch_limit: number;
-    post_fetch_limit: number;
-    include_op_context: boolean;
-    max_comment_chars: number;
-    is_auto_pilot_enabled: boolean;
-    auto_pilot_confidence_threshold: number;
-    auto_pilot_daily_limit: number;
-    created_at: string;
+    keywords: string[];
+    platform_config?: Record<string, unknown>;
+    daily_draft_cap?: number;
+    created_at?: string;
 }
 
 export interface RuleTestResponse {
@@ -33,27 +32,37 @@ export interface RuleTestResponse {
 }
 
 export function useCampaigns() {
+    const api = useApi();
     return useQuery({
         queryKey: ["campaigns"],
         queryFn: async (): Promise<Campaign[]> => {
-            const res = await fetch("/api/campaigns");
-            if (!res.ok) throw new Error("Failed to fetch campaigns");
-            return res.json();
+            const { data } = await api.get("/api/campaigns");
+            return data;
         },
     });
 }
 
 export function useCreateCampaign() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (payload: Partial<Campaign>) => {
-            const res = await fetch("/api/campaigns", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok) throw new Error("Failed to create campaign");
-            return res.json();
+            const { data } = await api.post("/api/campaigns", payload);
+            return data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+        },
+    });
+}
+
+export function useUpdateCampaign() {
+    const api = useApi();
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async ({ id, ...payload }: Partial<Campaign> & { id: number }) => {
+            const { data } = await api.patch(`/api/campaigns/${id}`, payload);
+            return data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["campaigns"] });
@@ -62,16 +71,26 @@ export function useCreateCampaign() {
 }
 
 export function useToggleCampaignStatus() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async ({ id, status }: { id: number; status: string }) => {
-            const res = await fetch(`/api/campaigns/${id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ status }),
-            });
-            if (!res.ok) throw new Error("Failed to update status");
-            return res.json();
+            const { data } = await api.patch(`/api/campaigns/${id}`, { status });
+            return data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+        },
+    });
+}
+
+export function useDeleteCampaign() {
+    const api = useApi();
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: async (id: number) => {
+            await api.delete(`/api/campaigns/${id}`);
+            return true;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["campaigns"] });
@@ -80,18 +99,13 @@ export function useToggleCampaignStatus() {
 }
 
 export function useRuleTester(campaignId: number) {
+    const api = useApi();
     return useMutation({
         mutationFn: async (sampleText: string): Promise<RuleTestResponse> => {
-            const res = await fetch(`/api/campaigns/${campaignId}/test-rules`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sample_text: sampleText }),
+            const { data } = await api.post(`/api/campaigns/${campaignId}/test-rules`, {
+                sample_text: sampleText,
             });
-            if (!res.ok) {
-                const error = await res.json();
-                throw new Error(error.detail || "Failed to test rules");
-            }
-            return res.json();
+            return data;
         },
     });
 }
