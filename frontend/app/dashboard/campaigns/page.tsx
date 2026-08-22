@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Play, Pause, Activity, Loader2, ArrowUpDown } from "lucide-react";
+import { Plus, Play, Pause, Activity, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +35,19 @@ const StatusBadge = ({ status }: { status: string }) => {
     }
 };
 
+const PlatformBadge = ({ platform }: { platform: Campaign["platform"] }) => {
+    const styles: Record<string, string> = {
+        REDDIT: "bg-orange-500/10 text-orange-500 border-orange-500/20",
+        LINKEDIN: "bg-blue-500/10 text-blue-500 border-blue-500/20",
+        TWITTER: "bg-sky-500/10 text-sky-500 border-sky-500/20",
+    };
+    return (
+        <Badge variant="outline" className={`px-1.5 py-0 text-[9px] font-bold tracking-tight ${styles[platform] || ""}`}>
+            {platform}
+        </Badge>
+    );
+};
+
 export default function CampaignsPage() {
     const [isDialogOpen, setIsDialogOpen] = React.useState(false);
     const { data: campaigns = [], isLoading } = useCampaigns();
@@ -46,7 +59,7 @@ export default function CampaignsPage() {
             { id: campaign.id, status: newStatus },
             {
                 onSuccess: () => {
-                    toast.success(`Campaign r/${campaign.subreddit_name} ${newStatus.toLowerCase()}`);
+                    toast.success(`Campaign "${campaign.name}" ${newStatus.toLowerCase()}`);
                 },
                 onError: (error: any) => {
                     toast.error(`Failed to toggle status: ${error.message}`);
@@ -79,7 +92,8 @@ export default function CampaignsPage() {
                     <TableHeader className="bg-muted/30 sticky top-0 z-10">
                         <TableRow className="hover:bg-transparent border-b border-border/40">
                             <TableHead className="text-xs font-mono uppercase text-muted-foreground py-3 px-6">Status</TableHead>
-                            <TableHead className="text-xs font-mono uppercase text-muted-foreground">Community</TableHead>
+                            <TableHead className="text-xs font-mono uppercase text-muted-foreground">Platform</TableHead>
+                            <TableHead className="text-xs font-mono uppercase text-muted-foreground">Target</TableHead>
                             <TableHead className="text-xs font-mono uppercase text-muted-foreground min-w-[300px]">Keywords</TableHead>
                             <TableHead className="text-xs font-mono uppercase text-muted-foreground">Poll Freq</TableHead>
                             <TableHead className="text-xs font-mono uppercase text-muted-foreground text-right px-6">Actions</TableHead>
@@ -90,6 +104,7 @@ export default function CampaignsPage() {
                             Array.from({ length: 5 }).map((_, i) => (
                                 <TableRow key={i} className="border-b border-border/40 animate-pulse">
                                     <TableCell className="px-6"><div className="h-5 w-16 bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-16 bg-muted rounded" /></TableCell>
                                     <TableCell><div className="h-4 w-32 bg-muted rounded" /></TableCell>
                                     <TableCell>
                                         <div className="flex gap-2">
@@ -104,11 +119,11 @@ export default function CampaignsPage() {
                             ))
                         ) : campaigns.length === 0 ? (
                             <TableRow>
-                                <TableCell colSpan={5} className="h-64 text-center">
+                                <TableCell colSpan={6} className="h-64 text-center">
                                     <div className="flex flex-col items-center justify-center gap-2 opacity-50">
                                         <Activity className="h-8 w-8" />
                                         <p className="text-sm font-medium">No active campaigns found</p>
-                                        <p className="text-xs">Create your first one to start monitoring subreddits</p>
+                                        <p className="text-xs">Create your first one to start monitoring a source</p>
                                     </div>
                                 </TableCell>
                             </TableRow>
@@ -119,10 +134,11 @@ export default function CampaignsPage() {
                                     className="group hover:bg-muted/40 border-b border-border/40 transition-colors"
                                 >
                                     <TableCell className="px-6"><StatusBadge status={campaign.status} /></TableCell>
+                                    <TableCell><PlatformBadge platform={campaign.platform} /></TableCell>
                                     <TableCell>
                                         <div className="flex flex-col gap-0.5">
-                                            <span className="text-sm font-semibold">r/{campaign.subreddit_name}</span>
-                                            <span className="text-[10px] text-muted-foreground font-mono opacity-50">{campaign.id}</span>
+                                            <span className="text-sm font-semibold">{campaign.name}</span>
+                                            <span className="text-[10px] text-muted-foreground font-mono opacity-70">{campaign.value}</span>
                                         </div>
                                     </TableCell>
                                     <TableCell>

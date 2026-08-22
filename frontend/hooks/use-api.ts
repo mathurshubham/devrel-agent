@@ -12,7 +12,9 @@ export const useApi = () => {
 
     const api = useMemo(() => {
         const instance = axios.create({
-            baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+            // Empty string = relative URLs, which flow through the Next.js
+            // rewrite proxy (see next.config.ts) honoring BACKEND_INTERNAL_URL.
+            baseURL: process.env.NEXT_PUBLIC_API_URL || '',
             headers: {
                 'Content-Type': 'application/json',
                 // ngrok bypass header for development

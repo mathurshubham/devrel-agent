@@ -5,7 +5,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
-import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
+import { Breadcrumbs } from "@/components/nav/breadcrumbs";
 import { Separator } from "@/components/ui/separator";
 import { CommandPalette } from "@/components/nav/command-palette";
 import { Toaster } from "@/components/ui/sonner";
@@ -47,21 +47,7 @@ export default function RootLayout({
                     <div className="flex items-center gap-2 flex-1">
                       <SidebarTrigger className="-ml-1 h-8 w-8" />
                       <Separator orientation="vertical" className="mr-2 h-4" />
-                      <Breadcrumb>
-                        <BreadcrumbList>
-                          <BreadcrumbItem>
-                            <BreadcrumbLink href="/dashboard" className="text-xs font-mono uppercase tracking-widest text-muted-foreground hover:text-foreground">Sentinel</BreadcrumbLink>
-                          </BreadcrumbItem>
-                          <BreadcrumbSeparator />
-                          <BreadcrumbItem>
-                            <BreadcrumbLink href="/dashboard/campaigns" className="text-sm font-medium">Campaigns</BreadcrumbLink>
-                          </BreadcrumbItem>
-                          <BreadcrumbSeparator />
-                          <BreadcrumbItem>
-                            <BreadcrumbPage className="text-sm font-semibold">Inbox</BreadcrumbPage>
-                          </BreadcrumbItem>
-                        </BreadcrumbList>
-                      </Breadcrumb>
+                      <Breadcrumbs />
                     </div>
                     <div className="flex items-center gap-4">
                       <kbd className="pointer-events-none hidden h-5 select-none items-center gap-1 rounded border border-border/40 bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
