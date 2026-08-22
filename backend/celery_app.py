@@ -1,6 +1,7 @@
 import logging
 import os
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_process_init
 from kombu import Queue
 
@@ -25,6 +26,8 @@ celery_app.conf.task_default_queue = "maintenance"
 celery_app.conf.task_routes = {
     "backend.tasks.workers.scraper_task": {"queue": "scraper"},
     "backend.tasks.workers.langgen_task": {"queue": "langgen"},
+    "backend.tasks.workers.analyst_task": {"queue": "langgen"},
+    "backend.tasks.workers.analyst_weekly_tick": {"queue": "maintenance"},
     "backend.tasks.workers.clear_expired_locks": {"queue": "maintenance"},
     "backend.tasks.workers.poll_engagement_outcomes": {"queue": "maintenance"},
     "backend.tasks.workers.purge_old_checkpoints_task": {"queue": "maintenance"},
@@ -59,6 +62,10 @@ celery_app.conf.update(
         "purge-old-checkpoints-daily": {
             "task": "backend.tasks.workers.purge_old_checkpoints_task",
             "schedule": 86400.0,  # 24 hours
+        },
+        "analyst-weekly-monday-6am-utc": {
+            "task": "backend.tasks.workers.analyst_weekly_tick",
+            "schedule": crontab(hour=6, minute=0, day_of_week=1),  # PRD V7 §5.6
         },
     },
 )

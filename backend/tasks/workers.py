@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from sqlalchemy import select, update
 
@@ -157,6 +157,124 @@ def purge_old_checkpoints_task(self):
         logger.info("purge_old_checkpoints_task stats=%s", stats)
 
     run_async(_purge)
+
+
+@celery_app.task(
+    name="backend.tasks.workers.analyst_task",
+    bind=True,
+    max_retries=3,
+    queue="langgen",
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def analyst_task(self, org_id: int, run_id: int, week_of: str):
+    """
+    Runs graph #2 (PRD V7 §5.6) end to end for one org's weekly Analyst run:
+
+        ingest -> triage -> cluster -> stance -> quotes -> aggregate -> render_brief
+
+    ``week_of`` (ISO date, the Monday of the analysis week) is fixed by the
+    caller -- the weekly beat tick or the on-demand trigger endpoint -- and
+    passed explicitly rather than recomputed here, so a Celery retry of this
+    exact task reuses the same ``(org_id, week_of)`` -> same checkpoint
+    thread_id (``backend.pipeline.analyst_graph.thread_id_for``) -> resumes
+    instead of re-ingesting or re-running LLM steps already completed.
+
+    ``acks_late``/``reject_on_worker_lost``: same crash-safety rationale as
+    ``langgen_task`` above -- a worker killed mid-run gets this task
+    redelivered with identical args, landing back in the checkpoint's
+    resume-with-``None`` branch.
+    """
+    async def _run():
+        from backend.pipeline.analyst_graph import run_analyst_pipeline
+
+        engine, session_local = build_session_factory()
+        redis_client = new_redis_client()
+        try:
+            final_state = await run_analyst_pipeline(
+                org_id, date.fromisoformat(week_of), run_id, session_local, redis_client
+            )
+            logger.info(
+                "analyst_task org=%s run=%s week_of=%s brief_id=%s terminal_reason=%s errors=%s",
+                org_id, run_id, week_of,
+                final_state.get("brief_id"),
+                final_state.get("terminal_reason"),
+                final_state.get("errors"),
+            )
+        except Exception:
+            logger.exception("analyst_task org=%s run=%s week_of=%s failed", org_id, run_id, week_of)
+            async with session_local() as db:
+                from backend.models import AnalystRun
+
+                run = await db.get(AnalystRun, run_id)
+                if run and run.status not in ("COMPLETED", "FAILED"):
+                    run.status = "FAILED"
+                    run.finished_at = datetime.now(timezone.utc)
+                    await db.commit()
+            raise
+        finally:
+            await redis_client.aclose()
+            await engine.dispose()
+
+    run_async(_run)
+
+
+@celery_app.task(name="backend.tasks.workers.analyst_weekly_tick", bind=True, queue="maintenance")
+def analyst_weekly_tick(self):
+    """
+    Celery Beat task (Mon 06:00 UTC, PRD V7 §5.6): dispatches one
+    ``analyst_task`` per org with ``OrgSettings.analyst_enabled`` set, unless
+    that org already has a non-terminal run for the current week (avoids
+    double-dispatch if beat fires more than once, e.g. after a restart).
+    """
+    async def _tick():
+        from backend.models import AnalystRun, OrgSettings
+        from backend.pipeline.analyst_graph import NON_TERMINAL_RUN_STATUSES, current_week_of
+
+        engine, session_local = build_session_factory()
+        try:
+            week_of = current_week_of()
+            async with session_local() as db:
+                org_ids = (
+                    (
+                        await db.execute(
+                            select(OrgSettings.org_id).where(OrgSettings.analyst_enabled.is_(True))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                dispatched = 0
+                for org_id in org_ids:
+                    existing = (
+                        await db.execute(
+                            select(AnalystRun).where(
+                                AnalystRun.org_id == org_id,
+                                AnalystRun.week_of == week_of,
+                                AnalystRun.status.in_(NON_TERMINAL_RUN_STATUSES),
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if existing:
+                        continue
+
+                    run = AnalystRun(org_id=org_id, week_of=week_of, status="RUNNING", started_at=datetime.now(timezone.utc))
+                    db.add(run)
+                    await db.flush()
+
+                    celery_app.send_task(
+                        "backend.tasks.workers.analyst_task",
+                        args=[org_id, run.id, week_of.isoformat()],
+                    )
+                    dispatched += 1
+
+                await db.commit()
+                logger.info("analyst_weekly_tick: dispatched %d org(s) for week_of=%s", dispatched, week_of)
+        finally:
+            await engine.dispose()
+
+    run_async(_tick)
 
 
 @celery_app.task(name="backend.tasks.workers.poll_engagement_outcomes", bind=True, queue="maintenance")

@@ -32,6 +32,11 @@ from backend.pipeline.graph import _psycopg_conn_string
 
 logger = logging.getLogger(__name__)
 
+#: AnalystRun.status values that mean "still in flight" -- used by the
+#: on-demand trigger endpoint's 409 check and the weekly beat task's
+#: "don't double-dispatch this org" guard.
+NON_TERMINAL_RUN_STATUSES = {"PENDING", "RUNNING"}
+
 
 def _after_ingest(state: AnalystState) -> str:
     return END if state.get("terminal") else "triage"
