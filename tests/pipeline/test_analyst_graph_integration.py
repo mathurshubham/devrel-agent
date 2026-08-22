@@ -15,9 +15,10 @@ graph's node callables too.
 
 import os
 import time
+from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import text, select, text
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 import backend.pipeline.analyst_nodes as analyst_nodes_module
@@ -35,8 +36,9 @@ from backend.models import (
     StanceObservation,
     TopicCluster,
 )
-from backend.pipeline.analyst_graph import run_analyst_pipeline
+from backend.pipeline.analyst_graph import run_analyst_pipeline, thread_id_for
 from backend.pipeline.analyst_schemas import ClusterResult, QuotesResult, StanceResult, TriageResult
+from backend.pipeline.graph import _psycopg_conn_string, setup_checkpointer_tables
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://postgres:test@localhost:55432/test"
@@ -363,3 +365,158 @@ async def test_no_posts_completes_run_without_a_brief(monkeypatch, pg_session_fa
         assert run_row.status == "COMPLETED"
         briefs = (await db.execute(select(IntelBrief).where(IntelBrief.org_id == org_id))).scalars().all()
         assert briefs == []
+
+
+# ---------------------------------------------------------------------------
+# regression: same-week thread_id collision (M3 review finding #1)
+# ---------------------------------------------------------------------------
+
+
+async def _purge_checkpoint_thread(thread_id: str) -> None:
+    """Deletes any existing checkpoint rows for ``thread_id``.
+
+    ``checkpoints``/``checkpoint_blobs``/``checkpoint_writes`` live outside
+    ``Base.metadata`` (``AsyncPostgresSaver`` manages them), so
+    ``pg_session_factory``'s per-test ``drop_all``/``create_all`` never
+    touches them -- they persist across test runs against a long-lived
+    Postgres instance. ``org_id``/``run_id`` are autoincrement PKs that
+    reset to the same low integers every test (fresh tables each time), so
+    without this, a *previous* run of this exact test could leave a stale
+    checkpoint under the very same thread_id this run is about to use --
+    silently defeating the thing the test is trying to prove.
+    """
+    from psycopg import AsyncConnection
+
+    conn_string = _psycopg_conn_string(TEST_DATABASE_URL)
+    async with await AsyncConnection.connect(conn_string, autocommit=True) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (thread_id,))
+            await cur.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,))
+            await cur.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
+
+
+async def test_second_same_week_run_does_not_resume_the_first_runs_checkpoint(
+    monkeypatch, pg_session_factory
+):
+    """Before ``thread_id`` was scoped by ``run_id``, a second AnalystRun for
+    the same (org, week) resumed the *first* run's already-``END``
+    checkpoint: it executed zero nodes and returned the first run's stale
+    state, while its own AnalystRun row stayed RUNNING forever (which also
+    permanently wedged the org-scoped 409 check on ``POST /run``). This
+    exercises the real ``AsyncPostgresSaver`` checkpointer end to end (not
+    ``use_checkpointer=False``, which every other test in this module uses)
+    -- the collision only manifests through the checkpointer's resume path.
+    """
+    await setup_checkpointer_tables(database_url=TEST_DATABASE_URL)
+
+    org_id = await _seed_org(pg_session_factory)
+    week_of = date(2026, 8, 17)
+
+    monkeypatch.setattr(analyst_nodes_module, "gather_analyst_posts", _mock_gather([_post("p1")]))
+    monkeypatch.setattr(analyst_nodes_module, "structured_completion", _mock_structured())
+    monkeypatch.setattr(analyst_nodes_module, "text_completion", _mock_text_completion)
+
+    async with pg_session_factory() as db:
+        run1 = AnalystRun(org_id=org_id, week_of=week_of, status="RUNNING")
+        db.add(run1)
+        await db.commit()
+        run1_id = run1.id
+
+    # See _purge_checkpoint_thread's docstring: org_id/run_id reset to the
+    # same low integers every test run against a long-lived Postgres
+    # instance, so a stale checkpoint from a *previous* run of this test
+    # could otherwise already sit at this exact thread_id.
+    await _purge_checkpoint_thread(thread_id_for(org_id, week_of.isoformat(), run1_id))
+
+    first_state = await run_analyst_pipeline(
+        org_id, week_of, run1_id, pg_session_factory,
+        use_checkpointer=True, database_url=TEST_DATABASE_URL,
+    )
+    assert first_state["terminal_reason"] == "completed"
+
+    # Second run, same org+week, a *different* run_id -- exactly the
+    # scenario the reviewer reproduced failing.
+    monkeypatch.setattr(analyst_nodes_module, "gather_analyst_posts", _mock_gather([_post("p2")]))
+    async with pg_session_factory() as db:
+        run2 = AnalystRun(org_id=org_id, week_of=week_of, status="RUNNING")
+        db.add(run2)
+        await db.commit()
+        run2_id = run2.id
+
+    await _purge_checkpoint_thread(thread_id_for(org_id, week_of.isoformat(), run2_id))
+
+    second_state = await run_analyst_pipeline(
+        org_id, week_of, run2_id, pg_session_factory,
+        use_checkpointer=True, database_url=TEST_DATABASE_URL,
+    )
+
+    # The bug: without a run_id-scoped thread, this comes back with run1's
+    # already-completed state (post "p1", zero nodes executed) instead of
+    # actually re-running ingest..render_brief for run2's own post "p2".
+    assert second_state["terminal_reason"] == "completed"
+    assert [c["post_id"] for c in second_state["classifications"]] == ["p2"]
+    assert second_state["brief_id"] is not None
+
+    async with pg_session_factory() as db:
+        run2_row = await db.get(AnalystRun, run2_id)
+        assert run2_row.status == "COMPLETED"
+        assert run2_row.finished_at is not None
+
+        # Both runs' classifications persisted independently -- run2 was
+        # never short-circuited into a no-op.
+        run1_classifications = (
+            await db.execute(select(PostClassification).where(PostClassification.run_id == run1_id))
+        ).scalars().all()
+        run2_classifications = (
+            await db.execute(select(PostClassification).where(PostClassification.run_id == run2_id))
+        ).scalars().all()
+        assert [c.source_meta["post_id"] for c in run1_classifications] == ["p1"]
+        assert [c.source_meta["post_id"] for c in run2_classifications] == ["p2"]
+
+
+# ---------------------------------------------------------------------------
+# regression: cross-week dedup lookback window (M3 review finding #10)
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_week_dedup_only_looks_back_eight_weeks(monkeypatch, pg_session_factory):
+    """A post classified more than ``_DEDUP_LOOKBACK_WEEKS`` weeks ago must
+    resurface as "fresh" again -- the dedup scan is bounded to a rolling
+    window, not the org's entire classification history."""
+    org_id = await _seed_org(pg_session_factory)
+    monkeypatch.setattr(analyst_nodes_module, "structured_completion", _mock_structured())
+    monkeypatch.setattr(analyst_nodes_module, "text_completion", _mock_text_completion)
+
+    this_week = date(2026, 8, 17)
+    within_window_week = this_week - timedelta(weeks=3)
+    outside_window_week = this_week - timedelta(weeks=9)
+
+    async def _seed_classified_week(week_of, post_id):
+        monkeypatch.setattr(analyst_nodes_module, "gather_analyst_posts", _mock_gather([_post(post_id)]))
+        async with pg_session_factory() as db:
+            run = AnalystRun(org_id=org_id, week_of=week_of, status="RUNNING")
+            db.add(run)
+            await db.commit()
+            run_id = run.id
+        await run_analyst_pipeline(org_id, week_of, run_id, pg_session_factory, use_checkpointer=False)
+
+    await _seed_classified_week(outside_window_week, "p-old")
+    await _seed_classified_week(within_window_week, "p-recent")
+
+    # This week: both post ids resurface. "p-recent" (3 weeks ago, inside
+    # the 8-week window) must dedupe out; "p-old" (9 weeks ago, outside the
+    # window) must NOT -- it's treated as fresh again.
+    monkeypatch.setattr(
+        analyst_nodes_module, "gather_analyst_posts", _mock_gather([_post("p-old"), _post("p-recent")])
+    )
+    async with pg_session_factory() as db:
+        run = AnalystRun(org_id=org_id, week_of=this_week, status="RUNNING")
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+
+    final_state = await run_analyst_pipeline(
+        org_id, this_week, run_id, pg_session_factory, use_checkpointer=False
+    )
+
+    assert [p["post_id"] for p in final_state["posts"]] == ["p-old"]
