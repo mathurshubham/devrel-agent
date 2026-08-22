@@ -12,7 +12,14 @@ from backend.utils.celery_async import run_async, new_redis_client
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="backend.tasks.workers.scraper_task", bind=True, max_retries=3, queue="scraper")
+@celery_app.task(
+    name="backend.tasks.workers.scraper_task",
+    bind=True,
+    max_retries=3,
+    queue="scraper",
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
 def scraper_task(self, campaign_id: int):
     """
     Reserved for future use. As of M2, ``langgen_task`` runs the whole reply
@@ -29,7 +36,14 @@ def scraper_task(self, campaign_id: int):
     )
 
 
-@celery_app.task(name="backend.tasks.workers.langgen_task", bind=True, max_retries=3, queue="langgen")
+@celery_app.task(
+    name="backend.tasks.workers.langgen_task",
+    bind=True,
+    max_retries=3,
+    queue="langgen",
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
 def langgen_task(self, campaign_id: int, scheduled_ts: float | None = None):
     """
     Runs graph #1 (PRD V7 §5.3) end to end for one campaign poll:
@@ -42,6 +56,24 @@ def langgen_task(self, campaign_id: int, scheduled_ts: float | None = None):
     task instance reuses the same ``(campaign_id, scheduled_ts)`` args, so it
     resumes from the last completed node instead of re-ingesting (and
     re-billing Apify) -- see ``backend.pipeline.graph.run_pipeline``.
+
+    ``acks_late=True`` + ``reject_on_worker_lost=True``: without these, the
+    default is "ack on delivery" -- if the worker process is killed
+    mid-run (OOM, deploy, ``SIGKILL``), Celery has already acked the
+    message and it is gone for good, so the checkpoint resume path above
+    can never actually be reached in production (nothing ever redelivers
+    the task to trigger it). With them, a task whose worker dies mid-run
+    is instead requeued and redelivered with the *same* args -- same
+    ``campaign_id``/``scheduled_ts`` -> same thread_id -> the retry lands
+    back in ``run_pipeline``'s resume-with-``None`` branch and continues
+    from the last completed node. This is safe to redeliver even if the
+    original attempt actually finished right as the worker died (the
+    at-least-once redelivery race): every node's own DB write is
+    idempotent (the ``PostedHistory``/``DraftReply`` dedup checks in
+    ``prefilter_node``, the ``IntegrityError`` safety net in
+    ``persist_gate_node``), and the checkpoint itself means a fully
+    completed run has no un-run nodes left for the redelivered task to
+    redo.
     """
     if scheduled_ts is None:
         scheduled_ts = time.time()
@@ -101,6 +133,30 @@ def clear_expired_locks(self):
             await engine.dispose()
 
     run_async(_clear)
+
+
+@celery_app.task(name="backend.tasks.workers.purge_old_checkpoints_task", bind=True, queue="maintenance")
+def purge_old_checkpoints_task(self):
+    """
+    Maintenance task (daily): delete LangGraph checkpoint state older than
+    7 days.
+
+    ``langgraph-checkpoint-postgres`` never expires anything itself, so
+    left alone the ``checkpoints``/``checkpoint_blobs``/``checkpoint_writes``
+    tables grow unboundedly -- and each checkpoint blob is a full snapshot
+    of pipeline state, including ingested post content, which would
+    otherwise outlive the PRD's retention schedule for that data. See
+    ``backend.pipeline.graph.purge_old_checkpoints`` for the actual
+    thread-scoped delete.
+    """
+    async def _purge():
+        from backend.pipeline.graph import purge_old_checkpoints
+
+        logger.info("Running purge_old_checkpoints_task maintenance task")
+        stats = await purge_old_checkpoints(retention_days=7)
+        logger.info("purge_old_checkpoints_task stats=%s", stats)
+
+    run_async(_purge)
 
 
 @celery_app.task(name="backend.tasks.workers.poll_engagement_outcomes", bind=True, queue="maintenance")

@@ -27,6 +27,7 @@ celery_app.conf.task_routes = {
     "backend.tasks.workers.langgen_task": {"queue": "langgen"},
     "backend.tasks.workers.clear_expired_locks": {"queue": "maintenance"},
     "backend.tasks.workers.poll_engagement_outcomes": {"queue": "maintenance"},
+    "backend.tasks.workers.purge_old_checkpoints_task": {"queue": "maintenance"},
     "backend.tasks.scheduler.scheduler_tick": {"queue": "maintenance"},
     "backend.tasks.scheduler.purge_old_webhook_events": {"queue": "maintenance"},
 }
@@ -54,6 +55,10 @@ celery_app.conf.update(
         "poll-engagement-outcomes-6h": {
             "task": "backend.tasks.workers.poll_engagement_outcomes",
             "schedule": 21600.0,  # 6 hours
+        },
+        "purge-old-checkpoints-daily": {
+            "task": "backend.tasks.workers.purge_old_checkpoints_task",
+            "schedule": 86400.0,  # 24 hours
         },
     },
 )
