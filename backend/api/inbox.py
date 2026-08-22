@@ -1,171 +1,251 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from backend.database import get_db
-from backend.models import DraftReply, DraftStatus, User
-from backend.schemas import DraftReplyResponse
+from backend.models import DraftReply, DraftStatus, PlatformEnum, PostedHistory
+from backend.schemas import (
+    DraftReplyResponse, DraftEditRequest, DraftRejectRequest,
+    DraftConfirmPostedRequest, DraftOpenCopyResponse, DraftLockResponse,
+)
 from backend.utils.auth import get_current_session
 from backend.utils.audit import write_audit_log
 
 router = APIRouter(prefix="/api/inbox", tags=["Inbox"])
 
+LOCK_DURATION = timedelta(minutes=15)
+
+
+async def _get_org_draft(db: AsyncSession, org_id: int, draft_id: int) -> DraftReply:
+    """Fetch a draft, scoped to the caller's org. 404s if it belongs to another org."""
+    draft = await db.get(DraftReply, draft_id)
+    if not draft or draft.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+
 @router.get("/drafts", response_model=List[DraftReplyResponse])
 async def list_drafts(
     campaign_id: Optional[int] = None,
     status: Optional[DraftStatus] = None,
+    platform: Optional[PlatformEnum] = None,
+    q: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     """
-    Fetch pending drafts for HITL review.
-    Filterable by campaign and status.
+    Fetch drafts for HITL review. Filterable by campaign, status, platform,
+    and free-text query `q` (trigram ILIKE over original_content/ai_draft_text,
+    backed by the GIN gin_trgm_ops indexes on draft_replies).
     """
     org_id = session["org_id"]
-    
-    # Subquery to ensure drafts belong to campaigns owned by the org
-    from backend.models import Campaign
-    
-    stmt = select(DraftReply).join(Campaign).where(Campaign.org_id == org_id)
-    
+
+    stmt = select(DraftReply).where(DraftReply.org_id == org_id)
+
     if campaign_id:
         stmt = stmt.where(DraftReply.campaign_id == campaign_id)
+    if platform:
+        stmt = stmt.where(DraftReply.platform == platform)
     if status:
         stmt = stmt.where(DraftReply.status == status)
     else:
-        # Default to PENDING if no status specified
         stmt = stmt.where(DraftReply.status == DraftStatus.PENDING)
-        
+    if q:
+        like_pattern = f"%{q}%"
+        stmt = stmt.where(
+            DraftReply.original_content.ilike(like_pattern) | DraftReply.ai_draft_text.ilike(like_pattern)
+        )
+
     stmt = stmt.order_by(DraftReply.created_at.desc())
-    
+
     result = await db.execute(stmt)
     return result.scalars().all()
 
-@router.post("/drafts/{id}/lock")
+
+@router.post("/drafts/{id}/lock", response_model=DraftLockResponse)
 async def lock_draft(
     id: int,
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
-    """
-    Atomic locking logic (Section 5.6) to prevent simultaneous editing.
-    """
+    """Atomic locking to prevent simultaneous editing. Lock lasts 15 minutes."""
     org_id = session["org_id"]
-    user_id = session["user_id"] # Internal user ID from sessions
-    
-    # Find user in DB to get the integer ID
-    stmt = select(User).where(User.clerk_id == session["clerk_id"])
-    res = await db.execute(stmt)
-    db_user = res.scalar_one_or_none()
-    
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found in database")
+    user_id = session["user_id"]
 
-    draft = await db.get(DraftReply, id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    
-    # Check if already locked by someone else and lock hasn't expired (15 mins)
+    draft = await _get_org_draft(db, org_id, id)
+
     now = datetime.now(timezone.utc)
-    if draft.locked_by_user_id and draft.locked_by_user_id != db_user.id:
-        if draft.locked_at and (now - draft.locked_at.replace(tzinfo=timezone.utc)).total_seconds() < 900:
-            raise HTTPException(status_code=409, detail=f"Draft is currently locked by another user")
+    if draft.locked_by_user_id and draft.locked_by_user_id != user_id:
+        locked_at = draft.locked_at
+        if locked_at and locked_at.tzinfo is None:
+            locked_at = locked_at.replace(tzinfo=timezone.utc)
+        if locked_at and (now - locked_at) < LOCK_DURATION:
+            raise HTTPException(status_code=409, detail="Draft is currently locked by another user")
 
-    # Update lock
-    draft.locked_by_user_id = db_user.id
+    draft.locked_by_user_id = user_id
     draft.locked_at = now
-    await db.commit()
-    
-    return {"status": "locked", "expires_at": now.isoformat()}
+    expires_at = now + LOCK_DURATION
 
-@router.post("/drafts/{id}/approve")
-async def approve_draft(
+    await db.commit()
+
+    return {"status": "locked", "expires_at": expires_at}
+
+
+@router.patch("/drafts/{id}", response_model=DraftReplyResponse)
+async def edit_draft(
+    id: int,
+    payload: DraftEditRequest,
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """Edit the AI-generated draft text before copying it out."""
+    org_id = session["org_id"]
+
+    draft = await _get_org_draft(db, org_id, id)
+    draft.ai_draft_text = payload.ai_draft_text
+
+    await write_audit_log(
+        db, org_id,
+        action='DRAFT_EDITED',
+        details={'draft_id': id},
+        user_id=session["user_id"]
+    )
+
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+@router.post("/drafts/{id}/open-copy", response_model=DraftOpenCopyResponse)
+async def open_copy_draft(
     id: int,
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     """
-    Approve a draft and queue it for publishing.
-    Triggers 'praw_publish' Celery task.
+    Human-in-the-loop hand-off: marks the draft AWAITING_CONFIRM and returns
+    the text to copy plus the target URL to open, so the reviewer can post it
+    manually on the source platform.
     """
     org_id = session["org_id"]
-    
-    draft = await db.get(DraftReply, id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    
-    # Transition to APPROVED
-    draft.status = DraftStatus.APPROVED
-    
-    # Identify who approved it
-    stmt = select(User).where(User.clerk_id == session["clerk_id"])
-    res = await db.execute(stmt)
-    db_user = res.scalar_one_or_none()
-    if db_user:
-        draft.approved_by_user_id = db_user.id
 
-    await db.commit()
-    
-    # ── TRIGGER CELERY TASK ───────────────────────────────────────────────────
-    try:
-        from backend.celery_app import celery_app
-        # We assume the task name based on TRD/conventions
-        celery_app.send_task(
-            "backend.tasks.praw_publish.publish_reply", 
-            args=[draft.id], 
-            queue='praw_publish'
-        )
-    except Exception as e:
-        # Log failure but don't fail the API call
-        print(f"Failed to queue publish task: {e}")
+    draft = await _get_org_draft(db, org_id, id)
+    draft.status = DraftStatus.AWAITING_CONFIRM
 
     await write_audit_log(
-        db, org_id, 
-        action='DRAFT_APPROVED', 
+        db, org_id,
+        action='DRAFT_OPEN_COPY',
         details={'draft_id': id},
         user_id=session["user_id"]
     )
-    
-    return {"status": "approved", "message": "Draft queued for publishing"}
 
-@router.post("/drafts/{id}/reject")
+    await db.commit()
+
+    return {
+        "clipboard_text": draft.ai_draft_text or "",
+        "reply_target_url": draft.reply_target_url or draft.url,
+    }
+
+
+@router.post("/drafts/{id}/confirm-posted", response_model=DraftReplyResponse)
+async def confirm_posted_draft(
+    id: int,
+    payload: DraftConfirmPostedRequest,
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """Confirms the reviewer actually posted the reply. Records posted_history for idempotency."""
+    org_id = session["org_id"]
+
+    draft = await _get_org_draft(db, org_id, id)
+    draft.status = DraftStatus.POSTED
+    draft.posted_at_source = datetime.now(timezone.utc)
+    if payload.live_url:
+        draft.live_url = payload.live_url
+
+    db.add(PostedHistory(org_id=org_id, platform=draft.platform, post_id=draft.post_id))
+
+    await write_audit_log(
+        db, org_id,
+        action='DRAFT_CONFIRMED_POSTED',
+        details={'draft_id': id, 'live_url': payload.live_url},
+        user_id=session["user_id"]
+    )
+
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+@router.post("/drafts/{id}/unconfirm", response_model=DraftReplyResponse)
+async def unconfirm_draft(
+    id: int,
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """Reverts an AWAITING_CONFIRM draft back to PENDING (reviewer changed their mind)."""
+    org_id = session["org_id"]
+
+    draft = await _get_org_draft(db, org_id, id)
+    draft.status = DraftStatus.PENDING
+
+    await write_audit_log(
+        db, org_id,
+        action='DRAFT_UNCONFIRMED',
+        details={'draft_id': id},
+        user_id=session["user_id"]
+    )
+
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+@router.post("/drafts/{id}/reject", response_model=DraftReplyResponse)
 async def reject_draft(
     id: int,
+    payload: DraftRejectRequest,
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     org_id = session["org_id"]
-    
-    draft = await db.get(DraftReply, id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    
+
+    draft = await _get_org_draft(db, org_id, id)
     draft.status = DraftStatus.REJECTED
-    await db.commit()
-    
+    draft.reject_reason = payload.reason
+
     await write_audit_log(
-        db, org_id, 
-        action='DRAFT_REJECTED', 
-        details={'draft_id': id},
+        db, org_id,
+        action='DRAFT_REJECTED',
+        details={'draft_id': id, 'reason': payload.reason},
         user_id=session["user_id"]
     )
-    return {"status": "rejected"}
 
-@router.delete("/drafts/{id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_draft(
+    await db.commit()
+    await db.refresh(draft)
+    return draft
+
+
+@router.post("/drafts/{id}/ignore", response_model=DraftReplyResponse)
+async def ignore_draft(
     id: int,
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
 ):
     org_id = session["org_id"]
-    
-    draft = await db.get(DraftReply, id)
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    
-    await db.delete(draft)
+
+    draft = await _get_org_draft(db, org_id, id)
+    draft.status = DraftStatus.IGNORED
+
+    await write_audit_log(
+        db, org_id,
+        action='DRAFT_IGNORED',
+        details={'draft_id': id},
+        user_id=session["user_id"]
+    )
+
     await db.commit()
-    
-    return None
+    await db.refresh(draft)
+    return draft
