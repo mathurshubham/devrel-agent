@@ -5,7 +5,7 @@ from typing import Optional, Dict, Tuple
 
 import jwt
 from jwt import PyJWKClient
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -32,6 +32,9 @@ security = HTTPBearer()
 # without hitting Postgres on every call. Not shared across processes —
 # a cache miss just falls through to the DB (or a fresh JIT insert).
 _ID_CACHE_TTL_SECONDS = 300
+# Simple size cap so a flood of distinct clerk ids (or a misbehaving client)
+# can't grow these dicts unbounded for the life of the process.
+_ID_CACHE_MAX_SIZE = 10_000
 _org_id_cache: Dict[str, Tuple[int, float]] = {}
 _user_id_cache: Dict[str, Tuple[int, float]] = {}
 
@@ -48,6 +51,12 @@ def _cache_get(cache: Dict[str, Tuple[int, float]], key: str) -> Optional[int]:
 
 
 def _cache_set(cache: Dict[str, Tuple[int, float]], key: str, value: int) -> None:
+    if len(cache) >= _ID_CACHE_MAX_SIZE and key not in cache:
+        # Cheap eviction: drop the oldest entry rather than growing forever.
+        # This isn't a strict LRU -- just a bound -- which is all a
+        # JIT-provisioning cache needs.
+        oldest_key = min(cache, key=lambda k: cache[k][1])
+        cache.pop(oldest_key, None)
     cache[key] = (value, time.time())
 
 
@@ -70,7 +79,12 @@ def _decode_token_sync(token: str) -> dict:
             detail="CLERK_JWKS_URL not configured",
         )
     signing_key = _jwks_client.get_signing_key_from_jwt(token)
-    decode_kwargs = {"algorithms": ["RS256"]}
+    # Clerk session tokens may carry an `aud` claim we have no configured
+    # audience to check against; PyJWT 2.13 hard-fails decode() if `aud` is
+    # present and audience verification is left on with no `audience=`
+    # passed in. We verify `iss` ourselves (below, when CLERK_ISSUER is set)
+    # instead of relying on PyJWT's audience check.
+    decode_kwargs = {"algorithms": ["RS256"], "options": {"verify_aud": False}}
     if CLERK_ISSUER:
         decode_kwargs["issuer"] = CLERK_ISSUER
     return jwt.decode(token, signing_key.key, **decode_kwargs)
@@ -84,8 +98,12 @@ async def _get_or_create_organization(
     cached_id = _cache_get(_org_id_cache, clerk_org_id)
     if cached_id is not None:
         org = await db.get(Organization, cached_id)
-        if org is not None:
+        # Guard against a stale/corrupted cache entry pointing at a row that
+        # no longer matches the clerk_org_id it was cached under -- fall
+        # through to the DB lookup below rather than trusting it blindly.
+        if org is not None and org.clerk_org_id == clerk_org_id:
             return org
+        _org_id_cache.pop(clerk_org_id, None)
 
     result = await db.execute(select(Organization).where(Organization.clerk_org_id == clerk_org_id))
     org = result.scalar_one_or_none()
@@ -175,6 +193,7 @@ async def _get_or_create_membership(
 
 
 async def get_current_session(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -212,9 +231,17 @@ async def get_current_session(
     email = claims.get("email") or ""
 
     organization = await _get_or_create_organization(db, clerk_org_id, name=org_name)
+    if not organization.is_active:
+        raise HTTPException(status_code=403, detail="Organization is deactivated")
+
     user = await _get_or_create_user(db, clerk_user_id, email=email, role=role)
     membership = await _get_or_create_membership(db, organization.id, user.id, role=role.value)
     await db.commit()
+
+    # Rate-limit by authenticated user rather than by (possibly shared/NATed)
+    # remote address; backend/limiter.py's key_func reads this off the
+    # request when present and falls back to remote address otherwise.
+    request.state.rate_key = user.clerk_user_id
 
     return {
         "org_id": organization.id,
