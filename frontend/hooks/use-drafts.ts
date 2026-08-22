@@ -79,10 +79,14 @@ export function useDrafts(params: DraftListParams = {}) {
 
 export function useLockDraft() {
     const api = useApi();
+    const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (id: number) => {
             const { data } = await api.post(`/api/inbox/drafts/${id}/lock`);
             return data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["drafts"] });
         },
     });
 }
@@ -103,10 +107,14 @@ export function useUpdateDraft() {
 
 export function useOpenCopyDraft() {
     const api = useApi();
+    const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (id: number): Promise<OpenCopyResponse> => {
             const { data } = await api.post(`/api/inbox/drafts/${id}/open-copy`);
             return data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["drafts"] });
         },
     });
 }
