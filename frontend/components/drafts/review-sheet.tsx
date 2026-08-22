@@ -190,6 +190,10 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
     };
 
     const handleReject = () => {
+        if (lockedByOther) {
+            toast.error("This draft is locked by another reviewer.");
+            return;
+        }
         if (!rejectReason) {
             toast.error("Pick a reject reason first");
             return;
@@ -443,7 +447,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                                 onChange={(e) => setEditedText(e.target.value)}
                                 className="h-full resize-none border-none p-0 text-sm leading-relaxed focus-visible:ring-0 bg-transparent font-medium"
                                 placeholder="Edit your response here..."
-                                disabled={isBusy || localStatus !== "PENDING"}
+                                disabled={isBusy || lockedByOther || localStatus !== "PENDING"}
                             />
                         </div>
 
@@ -457,7 +461,7 @@ export function ReviewSheet({ isOpen, onOpenChange, draft }: ReviewSheetProps) {
                                 <button
                                     className="hover:text-foreground disabled:opacity-50"
                                     onClick={() => setEditedText(draft.ai_draft_text)}
-                                    disabled={isBusy || localStatus !== "PENDING"}
+                                    disabled={isBusy || lockedByOther || localStatus !== "PENDING"}
                                 >Reset</button>
                             </div>
                         </div>
