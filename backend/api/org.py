@@ -8,9 +8,10 @@ from typing import List
 import redis.asyncio as redis
 
 from backend.database import get_db
-from backend.models import OrgLLMConfig, OrgPersona, AuditLog, Campaign, CampaignStatus
+from backend.models import OrgLLMConfig, OrgPersona, OrgSettings, AuditLog, Campaign, CampaignStatus
 from backend.schemas import (
     LLMConfigUpdate, PersonaUpdate, PersonaResponse, AuditLogSchema, OrgUsageSchema,
+    OrgSettingsResponse, OrgSettingsUpdate,
     ALLOWED_LLM_PROVIDERS,
 )
 from backend.utils.tokenizer import (
@@ -277,3 +278,60 @@ async def update_persona(
 
     await db.commit()
     return {"status": "success", "tokens_used": total}
+
+
+@router.get("/settings", response_model=OrgSettingsResponse)
+async def get_org_settings_endpoint(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """
+    Fetch the org's settings (reply hook, scout prompt, LinkedIn staleness
+    filter, Analyst opt-in, disclosure default, pillar taxonomy, Apify
+    budget). Defaults are returned when the org has no OrgSettings row yet
+    -- unlike persona, settings has sensible zero-config defaults so there
+    is no "not configured" 404 here.
+    """
+    org_id = session["org_id"]
+    stmt = select(OrgSettings).where(OrgSettings.org_id == org_id)
+    result = await db.execute(stmt)
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        return OrgSettingsResponse()
+    return settings
+
+
+@router.patch("/settings", response_model=OrgSettingsResponse)
+@limiter.limit("10/minute")
+async def update_org_settings(
+    payload: OrgSettingsUpdate,
+    request: Request,  # required by slowapi
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(get_current_session)
+):
+    """Partial update of the org's settings; creates the row on first write."""
+    org_id = session["org_id"]
+
+    stmt = select(OrgSettings).where(OrgSettings.org_id == org_id)
+    result = await db.execute(stmt)
+    settings = result.scalar_one_or_none()
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if settings:
+        for key, value in update_data.items():
+            setattr(settings, key, value)
+    else:
+        settings = OrgSettings(org_id=org_id, **update_data)
+        db.add(settings)
+
+    await write_audit_log(
+        db, org_id,
+        action='ORG_SETTINGS_UPDATED',
+        details={'changes': list(update_data.keys())},
+        user_id=session["user_id"]
+    )
+
+    await db.commit()
+    await db.refresh(settings)
+    return settings
