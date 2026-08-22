@@ -134,6 +134,7 @@ export default function DashboardPage() {
                                     <TableCell>
                                         <Popover>
                                             <PopoverTrigger
+                                                nativeButton={false}
                                                 render={
                                                     <Badge className={`cursor-pointer border ${getConfidenceColor(draft.confidence_score)}`}>
                                                         {(draft.confidence_score * 100).toFixed(0)}%
