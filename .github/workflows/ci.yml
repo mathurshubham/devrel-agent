@@ -67,13 +67,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --project backend --locked
 
+      # The service containers' own --health-cmd checks gate step start, so
+      # this is belt-and-suspenders. Uses bash /dev/tcp: the runner image has
+      # no redis-cli, and pg_isready availability shouldn't be assumed either.
       - name: Wait for Postgres/Redis
         run: |
-          for i in $(seq 1 30); do
-            pg_isready -h localhost -p 55432 -U postgres && break
-            sleep 1
+          for port in 55432 56379; do
+            for _ in $(seq 1 30); do
+              (exec 3<>"/dev/tcp/localhost/$port") 2>/dev/null && { exec 3>&-; echo "port $port up"; break; }
+              sleep 1
+            done
           done
-          redis-cli -h localhost -p 56379 ping
 
       - name: Run tests
         run: PYTHONPATH=. uv run --project backend pytest tests/ -q
