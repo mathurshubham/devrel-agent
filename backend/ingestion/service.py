@@ -33,7 +33,7 @@ DEFAULT_COST_PER_1K_USD: dict[str, float] = {
 }
 
 #: Fallback org monthly Apify budget when OrgSettings does not set one.
-DEFAULT_MONTHLY_BUDGET_USD = 25.0
+DEFAULT_MONTHLY_BUDGET_USD = 50.0  # matches OrgSettings.apify_monthly_budget_usd server default
 
 SPEND_KEY_PREFIX = "apify:spend"
 #: Keep two extra months of counters so month-boundary reads stay correct.
