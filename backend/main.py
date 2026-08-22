@@ -13,6 +13,7 @@ from backend.api.campaigns import router as campaigns_router
 from backend.api.inbox import router as inbox_router
 from backend.api.prompts import router as prompts_router
 from backend.api.admin import router as admin_router
+from backend.api.apify import router as apify_router
 # NOTE: api/apify.py is being added in a parallel wave — its router include
 # belongs here alongside the others once that module lands.
 
@@ -53,6 +54,7 @@ app.include_router(campaigns_router)
 app.include_router(inbox_router)
 app.include_router(prompts_router)
 app.include_router(admin_router, prefix="/api/admin", tags=["Super Admin"])
+app.include_router(apify_router)
 
 @app.get("/health")
 @limiter.limit("60/minute")
