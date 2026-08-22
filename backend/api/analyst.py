@@ -11,13 +11,17 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.celery_app import celery_app
 from backend.database import get_db
 from backend.models import AnalystRun, Competitor, IntelBrief, TargetAuthor, TopicCluster
-from backend.pipeline.analyst_graph import NON_TERMINAL_RUN_STATUSES, current_week_of
+from backend.pipeline.analyst_graph import (
+    NON_TERMINAL_RUN_STATUSES,
+    current_week_of,
+    non_stale_non_terminal_filter,
+)
 from backend.schemas import (
     AnalystRunResponse,
     CompetitorCreate,
@@ -60,13 +64,21 @@ async def trigger_analyst_run(
     run in flight."""
     org_id = session["org_id"]
 
+    # Only a genuinely in-flight run blocks a new one -- a RUNNING row
+    # older than the stale-run threshold is a wedged run (see
+    # backend.pipeline.analyst_graph.non_stale_non_terminal_filter), not a
+    # real in-progress run, and must not permanently 409 every future
+    # trigger for this org. ``.limit(1)`` + ``scalars().first()`` since
+    # nothing here guarantees at most one non-terminal row.
     existing = (
         await db.execute(
-            select(AnalystRun).where(
-                AnalystRun.org_id == org_id, AnalystRun.status.in_(NON_TERMINAL_RUN_STATUSES)
-            )
+            select(AnalystRun)
+            .where(AnalystRun.org_id == org_id)
+            .where(non_stale_non_terminal_filter())
+            .order_by(AnalystRun.id.desc())
+            .limit(1)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing:
         raise HTTPException(status_code=409, detail="An analyst run is already in progress for this org")
 
@@ -179,11 +191,26 @@ async def get_pillar_forecast(
     this_monday = current_week_of()
     weeks = [this_monday - timedelta(days=7 * i) for i in range(4)]
 
+    # A given (org, week) can have more than one AnalystRun row (a
+    # re-trigger, a retried run that raced a completed one, ...) --
+    # aggregating TopicClusters across every run for that week would
+    # double (or triple, ...) its pillar counts. Only the latest COMPLETED
+    # run per week feeds the forecast.
+    latest_completed_run = (
+        select(AnalystRun.week_of, func.max(AnalystRun.id).label("run_id"))
+        .where(
+            AnalystRun.org_id == org_id,
+            AnalystRun.week_of.in_(weeks),
+            AnalystRun.status == "COMPLETED",
+        )
+        .group_by(AnalystRun.week_of)
+        .subquery()
+    )
+
     rows = (
         await db.execute(
-            select(TopicCluster.pillar, TopicCluster.count, AnalystRun.week_of)
-            .join(AnalystRun, AnalystRun.id == TopicCluster.run_id)
-            .where(AnalystRun.org_id == org_id, AnalystRun.week_of.in_(weeks))
+            select(TopicCluster.pillar, TopicCluster.count, latest_completed_run.c.week_of)
+            .join(latest_completed_run, latest_completed_run.c.run_id == TopicCluster.run_id)
         )
     ).all()
 

@@ -47,6 +47,16 @@ class FakeDB:
         result = MagicMock()
         result.scalar_one_or_none.return_value = scalar_one_or_none
         result.scalars.return_value.all.return_value = scalars_all or []
+        # ``.scalars().first()`` -- the MultipleResultsFound-safe pattern
+        # (``select(...).order_by(...).limit(1)`` + ``scalars().first()``)
+        # used in place of a bare ``scalar_one_or_none()`` wherever the
+        # query has no unique constraint guaranteeing at most one row.
+        # Defaults to whatever ``scalar_one_or_none`` was given so tests
+        # written against either style see the same canned row.
+        first_value = scalar_one_or_none
+        if first_value is None and scalars_all:
+            first_value = scalars_all[0]
+        result.scalars.return_value.first.return_value = first_value
         result.all.return_value = scalars_all or []
         self._execute_results.append(result)
 
@@ -56,6 +66,7 @@ class FakeDB:
         empty = MagicMock()
         empty.scalar_one_or_none.return_value = None
         empty.scalars.return_value.all.return_value = []
+        empty.scalars.return_value.first.return_value = None
         empty.all.return_value = []
         return empty
 
