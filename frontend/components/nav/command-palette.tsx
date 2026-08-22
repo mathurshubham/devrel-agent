@@ -10,6 +10,8 @@ import {
     Settings,
     Cpu,
     Database,
+    Radar,
+    LineChart,
 } from "lucide-react";
 
 import {
@@ -63,6 +65,20 @@ export function CommandPalette() {
                     >
                         <Megaphone className="mr-2 h-4 w-4 opacity-70" />
                         <span>Campaigns</span>
+                    </CommandItem>
+                    <CommandItem
+                        onSelect={() => runCommand(() => router.push("/dashboard/intel"))}
+                        className="text-sm py-2"
+                    >
+                        <Radar className="mr-2 h-4 w-4 opacity-70" />
+                        <span>Intel</span>
+                    </CommandItem>
+                    <CommandItem
+                        onSelect={() => runCommand(() => router.push("/dashboard/analytics"))}
+                        className="text-sm py-2"
+                    >
+                        <LineChart className="mr-2 h-4 w-4 opacity-70" />
+                        <span>Analytics</span>
                     </CommandItem>
                 </CommandGroup>
 

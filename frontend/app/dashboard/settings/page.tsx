@@ -16,6 +16,7 @@ import {
     Trash2,
     Pencil,
     ShieldAlert,
+    SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { OrganizationProfile } from "@clerk/nextjs";
@@ -49,6 +50,7 @@ import {
     useUpdateApifyToken,
     useDeleteApifyToken,
 } from "@/hooks/use-apify";
+import { WorkspaceTab } from "@/components/settings/workspace-tab";
 
 const PROVIDERS: { id: LLMProvider; name: string; placeholder: string; hint: string; isDefault?: boolean }[] = [
     { id: "openrouter", name: "OpenRouter", placeholder: "sk-or-...", hint: "openrouter/anthropic/claude-3.5-sonnet", isDefault: true },
@@ -367,6 +369,10 @@ export default function SettingsPage() {
                         <Database className="h-3.5 w-3.5" />
                         Apify Keys
                     </TabsTrigger>
+                    <TabsTrigger value="workspace" className="gap-2">
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                        Workspace
+                    </TabsTrigger>
                     <TabsTrigger value="team" className="gap-2">
                         <Users className="h-3.5 w-3.5" />
                         Team
@@ -485,6 +491,10 @@ export default function SettingsPage() {
 
                 <TabsContent value="apify" className="outline-none">
                     <ApifyKeysTab />
+                </TabsContent>
+
+                <TabsContent value="workspace" className="outline-none">
+                    <WorkspaceTab />
                 </TabsContent>
 
                 <TabsContent value="team" className="outline-none border border-border/40 rounded-md overflow-hidden bg-background min-h-[600px]">
