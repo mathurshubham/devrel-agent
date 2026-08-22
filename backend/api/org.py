@@ -25,6 +25,13 @@ from backend.tasks.scheduler import remove_campaign
 
 router = APIRouter(prefix="/api/org", tags=["Organization"])
 
+# FastAPI (uvicorn) runs a single long-lived event loop for the process, so
+# a module-level redis client here is safe -- unlike the Celery task bodies
+# fixed in backend/utils/celery_async.py, which each get their own
+# asyncio.run() event loop and need a fresh client per invocation instead.
+_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+_redis_client = redis.from_url(_REDIS_URL)
+
 
 @router.get("/usage", response_model=OrgUsageSchema)
 async def get_org_usage(
@@ -33,14 +40,12 @@ async def get_org_usage(
 ):
     """Fetch daily token and monthly cost usage from Redis."""
     org_id = session["org_id"]
-    REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    r = redis.from_url(REDIS_URL)
 
     daily_key = f"llm:tokens:{org_id}:{date.today().isoformat()}"
     month_key = f"llm:cost_usd:{org_id}:{date.today().strftime('%Y-%m')}"
 
-    daily_tokens = await r.get(daily_key)
-    monthly_cost = await r.get(month_key)
+    daily_tokens = await _redis_client.get(daily_key)
+    monthly_cost = await _redis_client.get(month_key)
 
     stmt = select(OrgLLMConfig).where(OrgLLMConfig.org_id == org_id)
     result = await db.execute(stmt)
