@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import date, datetime
 from backend.models import CampaignStatus, DraftStatus, PlatformEnum, ReplyType, PromptType
 
 # ── Org / LLM config ─────────────────────────────────────────────────────────
@@ -235,3 +235,86 @@ class PromptTemplateResponse(PromptTemplateBase):
     version: int
     org_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+# ── Org Settings ─────────────────────────────────────────────────────────────
+
+class OrgSettingsUpdate(BaseModel):
+    reply_hook: Optional[str] = None
+    scout_prompt: Optional[str] = None
+    linkedin_stale_days: Optional[int] = None
+    linkedin_stale_min_engagement: Optional[int] = None
+    analyst_enabled: Optional[bool] = None
+    disclosure_reddit: Optional[bool] = None
+    pillar_taxonomy: Optional[List[Dict[str, str]]] = None
+    apify_monthly_budget_usd: Optional[float] = Field(default=None, ge=0)
+
+
+class OrgSettingsResponse(BaseModel):
+    reply_hook: Optional[str] = None
+    scout_prompt: Optional[str] = None
+    linkedin_stale_days: Optional[int] = None
+    linkedin_stale_min_engagement: Optional[int] = None
+    analyst_enabled: bool = False
+    disclosure_reddit: bool = True
+    pillar_taxonomy: Optional[List[Dict[str, str]]] = None
+    apify_monthly_budget_usd: float = 50.0
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ── Analyst: TargetAuthor / Competitor ───────────────────────────────────────
+
+class TargetAuthorBase(BaseModel):
+    name: str = Field(..., min_length=1)
+    tier: Optional[int] = Field(default=None, ge=1, le=3)
+    profile_url: Optional[str] = None
+
+
+class TargetAuthorCreate(TargetAuthorBase):
+    # A newly added watch-list author defaults to Tier 1 ("always surface"
+    # -- PRD V7 §5.6/§9) rather than untiered; an org that wants a lower
+    # tier can still say so explicitly.
+    tier: Optional[int] = Field(default=1, ge=1, le=3)
+
+
+class TargetAuthorResponse(TargetAuthorBase):
+    id: int
+    org_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CompetitorBase(BaseModel):
+    name: str = Field(..., min_length=1)
+    platform: Optional[PlatformEnum] = None
+    url: Optional[str] = None
+
+
+class CompetitorCreate(CompetitorBase):
+    pass
+
+
+class CompetitorResponse(CompetitorBase):
+    id: int
+    org_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ── Analyst: runs / briefs ────────────────────────────────────────────────────
+
+class AnalystRunResponse(BaseModel):
+    run_id: Optional[int] = None
+    status: str
+    week_of: Optional[date] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class IntelBriefSummary(BaseModel):
+    id: int
+    org_id: int
+    week_of: date
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntelBriefDetail(IntelBriefSummary):
+    content_md: str

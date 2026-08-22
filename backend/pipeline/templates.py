@@ -69,15 +69,13 @@ _TOP_ANGLES_LOOKBACK_DAYS = 30
 _TOP_ANGLES_LIMIT = 3
 
 
-async def get_top_angles_hint(db: AsyncSession, org_id: int, platform: str) -> str:
-    """Scout-prompt hint naming the best-performing angles over the last 30 days.
-
-    Ported from social-agent's ``routers/pipeline.py::_get_top_angles_hint``,
-    adapted to the V7 schema: "performance" is approximated from
-    ``EngagementOutcome.got_response`` on this org+platform's drafts (the
-    MVP scored against a bespoke ``total_score`` column that V7 does not
-    have). Returns "" when there is nothing to hint at yet.
-    """
+async def top_angles(
+    db: AsyncSession, org_id: int, platform: str, *, limit: int = _TOP_ANGLES_LIMIT
+) -> list[tuple[str, float]]:
+    """``[(angle_name, response_rate), ...]`` ranked best-first over the last
+    30 days, ``response_rate`` = fraction of that angle's POSTED drafts with
+    ``EngagementOutcome.got_response``. Shared by the Scout-prompt feedback
+    hint below and ``GET /api/analytics/top-angles`` (PRD V7 §5.7)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=_TOP_ANGLES_LOOKBACK_DAYS)
 
     stmt = (
@@ -93,17 +91,29 @@ async def get_top_angles_hint(db: AsyncSession, org_id: int, platform: str) -> s
     )
     rows = (await db.execute(stmt)).all()
     if not rows:
-        return ""
+        return []
 
     totals: dict[str, list[int]] = defaultdict(list)
     for angle_name, got_response in rows:
         totals[angle_name].append(1 if got_response else 0)
 
-    ranked = sorted(
+    return sorted(
         ((name, sum(vals) / len(vals)) for name, vals in totals.items()),
         key=lambda pair: pair[1],
         reverse=True,
-    )[:_TOP_ANGLES_LIMIT]
+    )[:limit]
+
+
+async def get_top_angles_hint(db: AsyncSession, org_id: int, platform: str) -> str:
+    """Scout-prompt hint naming the best-performing angles over the last 30 days.
+
+    Ported from social-agent's ``routers/pipeline.py::_get_top_angles_hint``,
+    adapted to the V7 schema: "performance" is approximated from
+    ``EngagementOutcome.got_response`` on this org+platform's drafts (the
+    MVP scored against a bespoke ``total_score`` column that V7 does not
+    have). Returns "" when there is nothing to hint at yet.
+    """
+    ranked = await top_angles(db, org_id, platform)
     if not ranked or ranked[0][1] <= 0:
         return ""
 
