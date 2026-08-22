@@ -11,13 +11,11 @@ import {
     Edit2,
     AlertCircle,
     CheckCircle2,
-    XCircle
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import {
     Table,
     TableBody,
@@ -64,10 +62,9 @@ export default function SafetyProfilesPage() {
 
     // Form State
     const [formData, setFormData] = useState<SubredditSafetyProfileCreate>({
-        subreddit_name: "",
-        allow_auto_pilot: true,
-        max_daily_posts: 5,
-        require_manual_review: false,
+        subreddit: "",
+        max_daily_drafts: 3,
+        require_manual_review: true,
         notes: ""
     });
 
@@ -75,19 +72,17 @@ export default function SafetyProfilesPage() {
         if (profile) {
             setEditingProfile(profile);
             setFormData({
-                subreddit_name: profile.subreddit_name,
-                allow_auto_pilot: profile.allow_auto_pilot,
-                max_daily_posts: profile.max_daily_posts,
+                subreddit: profile.subreddit,
+                max_daily_drafts: profile.max_daily_drafts,
                 require_manual_review: profile.require_manual_review,
                 notes: profile.notes || ""
             });
         } else {
             setEditingProfile(null);
             setFormData({
-                subreddit_name: "",
-                allow_auto_pilot: true,
-                max_daily_posts: 5,
-                require_manual_review: false,
+                subreddit: "",
+                max_daily_drafts: 3,
+                require_manual_review: true,
                 notes: ""
             });
         }
@@ -95,7 +90,7 @@ export default function SafetyProfilesPage() {
     };
 
     const handleSave = async () => {
-        if (!formData.subreddit_name) {
+        if (!formData.subreddit) {
             toast.error("Subreddit name is required");
             return;
         }
@@ -129,7 +124,7 @@ export default function SafetyProfilesPage() {
     };
 
     const filteredProfiles = profiles?.filter(p =>
-        p.subreddit_name.toLowerCase().includes(searchQuery.toLowerCase())
+        p.subreddit.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     if (isLoading) {
@@ -178,8 +173,7 @@ export default function SafetyProfilesPage() {
                         <TableHeader className="bg-muted/10">
                             <TableRow className="hover:bg-transparent">
                                 <TableHead className="w-[200px] py-3 text-[10px] uppercase font-mono tracking-widest">Subreddit</TableHead>
-                                <TableHead className="py-3 text-[10px] uppercase font-mono tracking-widest text-center">Auto-Pilot</TableHead>
-                                <TableHead className="py-3 text-[10px] uppercase font-mono tracking-widest text-center">Daily Limit</TableHead>
+                                <TableHead className="py-3 text-[10px] uppercase font-mono tracking-widest text-center">Daily Draft Cap</TableHead>
                                 <TableHead className="py-3 text-[10px] uppercase font-mono tracking-widest text-center">Manual Review</TableHead>
                                 <TableHead className="py-3 text-[10px] uppercase font-mono tracking-widest">Notes</TableHead>
                                 <TableHead className="w-[50px] py-3"></TableHead>
@@ -188,7 +182,7 @@ export default function SafetyProfilesPage() {
                         <TableBody>
                             {filteredProfiles?.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={6} className="h-32 text-center text-muted-foreground italic">
+                                    <TableCell colSpan={5} className="h-32 text-center text-muted-foreground italic">
                                         No safety profiles found. Create one to get started.
                                     </TableCell>
                                 </TableRow>
@@ -196,17 +190,10 @@ export default function SafetyProfilesPage() {
                                 filteredProfiles?.map((profile) => (
                                     <TableRow key={profile.id} className="group transition-colors border-border/40">
                                         <TableCell className="font-mono text-xs font-semibold py-4">
-                                            r/{profile.subreddit_name}
-                                        </TableCell>
-                                        <TableCell className="text-center">
-                                            {profile.allow_auto_pilot ? (
-                                                <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20 text-[10px] uppercase font-mono py-0 h-4">Enabled</Badge>
-                                            ) : (
-                                                <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20 text-[10px] uppercase font-mono py-0 h-4">Disabled</Badge>
-                                            )}
+                                            r/{profile.subreddit}
                                         </TableCell>
                                         <TableCell className="text-center font-mono text-xs">
-                                            {profile.max_daily_posts} posts
+                                            {profile.max_daily_drafts} drafts/day
                                         </TableCell>
                                         <TableCell className="text-center">
                                             {profile.require_manual_review ? (
@@ -249,7 +236,7 @@ export default function SafetyProfilesPage() {
                     <DialogHeader>
                         <DialogTitle className="text-base tracking-tight">{editingProfile ? "Edit Safety Profile" : "New Safety Profile"}</DialogTitle>
                         <DialogDescription className="text-xs">
-                            Define community-specific guardrails for r/{formData.subreddit_name || "..."}
+                            Define community-specific guardrails for r/{formData.subreddit || "..."}
                         </DialogDescription>
                     </DialogHeader>
 
@@ -261,46 +248,37 @@ export default function SafetyProfilesPage() {
                                 <Input
                                     placeholder="e.g. reactjs"
                                     className="h-9 text-sm font-mono shadow-none"
-                                    value={formData.subreddit_name}
-                                    onChange={(e) => setFormData({ ...formData, subreddit_name: e.target.value.toLowerCase() })}
+                                    value={formData.subreddit}
+                                    onChange={(e) => setFormData({ ...formData, subreddit: e.target.value.toLowerCase() })}
                                     disabled={!!editingProfile}
                                 />
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="flex flex-col gap-2 p-3 rounded-md border border-border/40 bg-muted/5">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-[10px] uppercase font-mono tracking-widest text-muted-foreground">Auto-Pilot</label>
-                                    <Checkbox
-                                        checked={formData.allow_auto_pilot}
-                                        onCheckedChange={(checked) => setFormData({ ...formData, allow_auto_pilot: !!checked })}
-                                    />
-                                </div>
-                                <p className="text-[10px] text-muted-foreground leading-snug">Allow AI to post directly without manual approval.</p>
+                        <div className="flex flex-col gap-2 p-3 rounded-md border border-border/40 bg-muted/5">
+                            <div className="flex items-center justify-between">
+                                <label className="text-[10px] uppercase font-mono tracking-widest text-muted-foreground">Require Manual Review</label>
+                                <Checkbox
+                                    checked={formData.require_manual_review}
+                                    onCheckedChange={(checked) => setFormData({ ...formData, require_manual_review: !!checked })}
+                                />
                             </div>
-                            <div className="flex flex-col gap-2 p-3 rounded-md border border-border/40 bg-muted/5">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-[10px] uppercase font-mono tracking-widest text-muted-foreground">Req. Review</label>
-                                    <Checkbox
-                                        checked={formData.require_manual_review}
-                                        onCheckedChange={(checked) => setFormData({ ...formData, require_manual_review: !!checked })}
-                                    />
-                                </div>
-                                <p className="text-[10px] text-muted-foreground leading-snug">Always force manual human review for all drafts.</p>
-                            </div>
+                            <p className="text-[10px] text-muted-foreground leading-snug">
+                                Every draft is human-posted by construction (Sentinel never publishes). This flag exists for
+                                communities that require extra scrutiny before a draft is even surfaced.
+                            </p>
                         </div>
 
                         <div className="grid gap-2">
                             <div className="flex justify-between items-center">
-                                <label className="text-[10px] uppercase font-mono tracking-widest text-muted-foreground">Max Daily Posts</label>
-                                <span className="text-xs font-mono font-bold text-primary">{formData.max_daily_posts}</span>
+                                <label className="text-[10px] uppercase font-mono tracking-widest text-muted-foreground">Max Daily Drafts</label>
+                                <span className="text-xs font-mono font-bold text-primary">{formData.max_daily_drafts}</span>
                             </div>
                             <Input
                                 type="number"
                                 className="h-9 text-sm font-mono shadow-none"
-                                value={formData.max_daily_posts}
-                                onChange={(e) => setFormData({ ...formData, max_daily_posts: parseInt(e.target.value) })}
+                                value={formData.max_daily_drafts}
+                                onChange={(e) => setFormData({ ...formData, max_daily_drafts: parseInt(e.target.value) })}
                             />
                         </div>
 

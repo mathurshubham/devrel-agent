@@ -4,9 +4,8 @@ import { useApi } from "@/hooks/use-api";
 export interface SubredditSafetyProfile {
     id: number;
     org_id: number;
-    subreddit_name: string;
-    allow_auto_pilot: boolean;
-    max_daily_posts: number;
+    subreddit: string;
+    max_daily_drafts: number;
     require_manual_review: boolean;
     notes?: string;
 }
