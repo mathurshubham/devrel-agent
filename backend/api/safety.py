@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import List
@@ -42,7 +43,7 @@ async def create_safety_profile(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail=f"Safety profile for {payload.subreddit} already exists."
         )
 
@@ -51,7 +52,16 @@ async def create_safety_profile(
         org_id=org_id
     )
     db.add(profile)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Race: another request created the same (org_id, subreddit) profile
+        # between our pre-check above and this flush.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Safety profile for {payload.subreddit} already exists."
+        )
 
     await write_audit_log(
         db, org_id,
@@ -95,7 +105,14 @@ async def update_safety_profile(
         user_id=session["user_id"]
     )
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Safety profile for {payload.subreddit} already exists."
+        )
     await db.refresh(profile)
     return profile
 
