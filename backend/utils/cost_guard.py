@@ -51,13 +51,25 @@ async def check_and_record_llm_usage(
     month_cost_raw = await r.get(month_key)
     month_cost  = float(month_cost_raw or 0)
     
-    # Calculate cost using litellm
-    # Using estimated_tokens as prompt_tokens since this check occurs BEFORE dispatch
-    token_cost  = litellm.completion_cost(
-        model=model, 
-        prompt_tokens=estimated_tokens, 
-        completion_tokens=0
-    )
+    # Calculate cost using litellm. Using estimated_tokens as prompt_tokens
+    # since this check occurs BEFORE dispatch.
+    #
+    # NOTE: `litellm.completion_cost(prompt_tokens=..., completion_tokens=...)`
+    # was removed from newer litellm releases (it now wants `prompt`/
+    # `completion` strings or a full response object) -- `cost_per_token`
+    # is litellm's token-count-based API and is what this pre-dispatch
+    # estimate actually needs. A model litellm has no pricing for (a
+    # self-hosted Ollama/custom-base-url model, an unrecognized provider
+    # prefix) raises rather than returning 0 -- BYOK custom models are a
+    # first-class case here, so that must degrade to "cost unknown, treat
+    # as free" rather than crash the pipeline's persist_gate.
+    try:
+        prompt_cost, completion_cost = litellm.cost_per_token(
+            model=model, prompt_tokens=estimated_tokens, completion_tokens=0
+        )
+        token_cost = prompt_cost + completion_cost
+    except Exception:
+        token_cost = 0.0
 
     if llm_config.max_monthly_llm_cost_usd and \
        month_cost + token_cost > float(llm_config.max_monthly_llm_cost_usd):
