@@ -24,11 +24,7 @@ services:
     # --proxy-headers and --forwarded-allow-ips required for Cloudflare tunnel / ngrok / nginx.
     ports:
       - "8000:8000" # <--- MUST ADD THIS LINE
-    command: >
-      sh -c 'alembic upgrade head &&
-             python seed.py &&
-             uvicorn main:app --host 0.0.0.0 --port 8000
-               --proxy-headers --forwarded-allow-ips="*"'
+    command: sh -c "alembic upgrade head && python seed.py && uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"
     env_file: .env
     depends_on:
       db: { condition: service_healthy }
