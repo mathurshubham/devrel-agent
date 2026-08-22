@@ -1,53 +1,73 @@
 import json
 import litellm
 from litellm import acompletion
+
 from backend.database import SessionLocal
 from backend.models import Campaign, OrgLLMConfig, OrgPersona
 from backend.utils.encryption import decrypt
-from backend.utils.tokenizer import compute_token_budget, count_tokens
+from backend.utils.tokenizer import compute_token_budget, count_tokens, DEFAULT_MODEL
 from backend.agent.state import AgentState
+
+
+def _llm_call_kwargs(llm_config: OrgLLMConfig) -> dict:
+    """
+    Build per-call LiteLLM kwargs from an org's BYOK vault entry. Never mutate
+    os.environ — api_key/api_base are always passed per-call. Falls back to
+    OPENROUTER_API_KEY from the environment for local/dev orgs with no vault key.
+    """
+    import os
+
+    kwargs = {}
+    if llm_config and llm_config.encrypted_api_key:
+        kwargs["api_key"] = decrypt(llm_config.encrypted_api_key, version=llm_config.encrypted_with_key_version)
+    elif os.environ.get("OPENROUTER_API_KEY"):
+        kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
+
+    if llm_config and llm_config.custom_base_url:
+        kwargs["api_base"] = llm_config.custom_base_url
+
+    return kwargs
+
 
 async def llm_intent_classifier(state: AgentState) -> AgentState:
     """
-    Node 3: LLMIntentClassifier
-    Uses LiteLLM to evaluate intent. Assigns confidence_score and triage_reasoning.
+    Node 3: LLMIntentClassifier.
+    Uses LiteLLM to evaluate intent. Assigns confidence and triage_reasoning.
     """
     campaign_id = state["campaign_id"]
-    original_text = state.get("original_text", "")
+    original_content = state.get("original_content", "")
     matched_keywords = state.get("matched_keywords", [])
 
     async with SessionLocal() as db:
         campaign = await db.get(Campaign, campaign_id)
         llm_config = await db.get(OrgLLMConfig, campaign.org_id)
-        
-        if not llm_config:
-            # Fallback or error
-            return {**state, "confidence_score": 0.0, "triage_reasoning": "No LLM configuration found"}
+
+        if not llm_config or not llm_config.model_name:
+            return {**state, "confidence": 0.0, "triage_reasoning": "No LLM configuration found"}
 
         model = llm_config.model_name
-        api_key = decrypt(llm_config.encrypted_api_key) if llm_config.encrypted_api_key else None
 
         system_prompt = (
-            "You are a Triage AI for a DevRel agent. Your goal is to evaluate if a Reddit post is relevant "
+            "You are a Triage AI for a DevRel agent. Your goal is to evaluate if a post is relevant "
             "for engagement based on matched keywords and content. "
-            "Return a JSON object with 'confidence_score' (0.0-1.0) and 'reasoning' (brief string)."
+            "Return a JSON object with 'confidence' (0.0-1.0) and 'reasoning' (brief string)."
         )
-        user_prompt = f"Keywords: {matched_keywords}\n\nContent:\n{original_text}"
+        user_prompt = f"Keywords: {matched_keywords}\n\nContent:\n{original_content}"
 
         response = await acompletion(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            api_key=api_key,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            **_llm_call_kwargs(llm_config),
         )
 
         try:
             content = response.choices[0].message.content
             data = json.loads(content)
-            confidence = float(data.get("confidence_score", 0.0))
+            confidence = float(data.get("confidence", 0.0))
             reasoning = data.get("reasoning", "No reasoning provided")
         except Exception:
             confidence = 0.0
@@ -55,81 +75,72 @@ async def llm_intent_classifier(state: AgentState) -> AgentState:
 
         return {
             **state,
-            "confidence_score": confidence,
-            "triage_reasoning": reasoning
+            "confidence": confidence,
+            "triage_reasoning": reasoning,
         }
+
 
 async def tokenizer_and_truncator(state: AgentState) -> AgentState:
     """
-    Node 4: TokenizerAndTruncator
+    Node 4: TokenizerAndTruncator.
     Progressively truncates the oldest comments first if text exceeds budget.
     """
     campaign_id = state["campaign_id"]
-    original_text = state.get("original_text", "")
-    
+    original_content = state.get("original_content", "")
+
     async with SessionLocal() as db:
         campaign = await db.get(Campaign, campaign_id)
         llm_config = await db.get(OrgLLMConfig, campaign.org_id)
         persona = await db.get(OrgPersona, campaign.org_id)
-        
-        model = llm_config.model_name if llm_config else "gpt-4o"
-        
+
+        model = llm_config.model_name if (llm_config and llm_config.model_name) else DEFAULT_MODEL
+
         if not persona:
-            # Should not happen if Phase 3 guards work, but for safety:
-            return state
+            return {**state, "truncation_applied": False}
 
         budget = compute_token_budget(model, persona)
-        current_tokens = count_tokens(model, original_text)
-        
+        current_tokens = count_tokens(model, original_content)
+
         if current_tokens <= budget:
             return {**state, "truncation_applied": False}
 
-        parts = original_text.split("\n\n")
+        parts = original_content.split("\n\n")
         header = parts[:2]
         comments = parts[2:]
-        
+
         details = {}
-        api_key = decrypt(llm_config.encrypted_api_key) if llm_config and llm_config.encrypted_api_key else None
-        
         removed_count = 0
         while comments and count_tokens(model, "\n\n".join(header + comments)) > budget:
             comments.pop()
             removed_count += 1
-            
-        modified_text = "\n\n".join(header + comments)
-        
-        if count_tokens(model, modified_text) > budget:
+
+        modified_content = "\n\n".join(header + comments)
+
+        if count_tokens(model, modified_content) > budget:
             details["summarized"] = True
-            if api_key:
+            kwargs = _llm_call_kwargs(llm_config) if llm_config else {}
+            if kwargs.get("api_key"):
                 try:
-                    prompt = f"Summarize this Reddit post concisely while keeping core intent to reduce length drastically:\n{modified_text}"
+                    prompt = f"Summarize this post concisely while keeping core intent to reduce length drastically:\n{modified_content}"
                     response = await acompletion(
                         model=model,
-                        messages=[{"role": "system", "content": "You are a concise summarizer."}, {"role": "user", "content": prompt}],
-                        api_key=api_key
+                        messages=[
+                            {"role": "system", "content": "You are a concise summarizer."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        **kwargs,
                     )
-                    modified_text = response.choices[0].message.content
+                    modified_content = response.choices[0].message.content
                 except Exception:
-                    modified_text = modified_text[:2000]
+                    modified_content = modified_content[:2000]
             else:
-                modified_text = modified_text[:2000]
-                
-        # 3. Truncate Master Context tail if still over limit
-        current_t = count_tokens(model, modified_text)
-        limit = litellm.get_max_tokens(model)
-        available_for_master = limit - persona.rulesets_token_count - current_t - 500
-        
-        if available_for_master < persona.master_context_tokens:
-            master = persona.master_context or ""
-            char_limit = max(0, int(available_for_master * 3.5))
-            details["master_context_truncated"] = True
-            details["truncated_master_context"] = master[:char_limit] + "... (truncated due to context limit)"
-            
+                modified_content = modified_content[:2000]
+
         details["removed_comments"] = removed_count
-        
+
         return {
             **state,
-            "original_text": modified_text,
+            "original_content": modified_content,
             "truncation_applied": True,
-            "truncation_details": details
+            "truncation_details": details,
         }
