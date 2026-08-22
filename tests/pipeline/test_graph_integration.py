@@ -33,6 +33,7 @@ from backend.models import (
     CampaignStatus,
     DraftReply,
     DraftStatus,
+    EngagementOutcome,
     Organization,
     OrgLLMConfig,
     OrgSettings,
@@ -44,6 +45,7 @@ from backend.models import (
 )
 from backend.pipeline.graph import run_pipeline, setup_checkpointer_tables
 from backend.pipeline.scout import ScoutOutput, ScoutSelection
+from backend.pipeline.templates import get_top_angles_hint
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://postgres:test@localhost:55432/test"
@@ -421,3 +423,83 @@ async def test_checkpoint_resume_does_not_re_ingest_after_a_mid_run_crash(
     async with pg_session_factory() as db:
         draft = await db.get(DraftReply, final_state["persisted_draft_ids"][0])
         assert draft.status == DraftStatus.PENDING
+
+
+# --- top-performing-angles hint (outcomes feedback loop, PRD §5.7) -------------
+
+
+async def test_top_angles_hint_is_empty_with_no_outcomes(pg_session_factory):
+    org_id, _campaign_id = await _seed_org_and_campaign(pg_session_factory)
+    async with pg_session_factory() as db:
+        hint = await get_top_angles_hint(db, org_id, "REDDIT")
+    assert hint == ""
+
+
+async def test_top_angles_hint_ranks_by_response_rate_and_caps_at_three(pg_session_factory):
+    org_id, campaign_id = await _seed_org_and_campaign(pg_session_factory)
+
+    async def _posted_draft(db, post_id, angle_name):
+        draft = DraftReply(
+            org_id=org_id,
+            campaign_id=campaign_id,
+            platform=PlatformEnum.REDDIT,
+            post_id=post_id,
+            reply_type=ReplyType.NEW_COMMENT,
+            status=DraftStatus.POSTED,
+            angle_name=angle_name,
+        )
+        db.add(draft)
+        await db.flush()
+        return draft
+
+    # Four angles with four STRICTLY distinct response rates (no ties, so
+    # the top-3 cutoff is deterministic) -- only the top 3 should make it
+    # into the hint, in best-first order.
+    async with pg_session_factory() as db:
+        best = await _posted_draft(db, "p-best", "REDDIT-ANGLE-1: Best")  # 1/1 = 1.0
+        mid = await _posted_draft(db, "p-mid", "REDDIT-ANGLE-2: Mid")  # 1/2 = 0.5
+        low = await _posted_draft(db, "p-low", "REDDIT-ANGLE-3: Low")  # 1/3 = 0.33
+        worst = await _posted_draft(db, "p-worst", "REDDIT-ANGLE-4: Worst")  # 0/1 = 0.0
+
+        db.add(EngagementOutcome(draft_id=best.id, hours_after=24, got_response=True))
+        db.add(EngagementOutcome(draft_id=mid.id, hours_after=24, got_response=True))
+        db.add(EngagementOutcome(draft_id=mid.id, hours_after=72, got_response=False))
+        db.add(EngagementOutcome(draft_id=low.id, hours_after=24, got_response=True))
+        db.add(EngagementOutcome(draft_id=low.id, hours_after=48, got_response=False))
+        db.add(EngagementOutcome(draft_id=low.id, hours_after=72, got_response=False))
+        db.add(EngagementOutcome(draft_id=worst.id, hours_after=24, got_response=False))
+        await db.commit()
+
+    async with pg_session_factory() as db:
+        hint = await get_top_angles_hint(db, org_id, "REDDIT")
+
+    assert hint.startswith("\n\nHINT:")
+    assert "REDDIT-ANGLE-4: Worst" not in hint
+    assert "REDDIT-ANGLE-1: Best" in hint
+    # Best-first ordering: the highest response-rate angle appears before a
+    # lower one.
+    assert hint.index("REDDIT-ANGLE-1: Best") < hint.index("REDDIT-ANGLE-3: Low")
+
+
+async def test_top_angles_hint_only_counts_posted_drafts(pg_session_factory):
+    org_id, campaign_id = await _seed_org_and_campaign(pg_session_factory)
+
+    async with pg_session_factory() as db:
+        rejected = DraftReply(
+            org_id=org_id,
+            campaign_id=campaign_id,
+            platform=PlatformEnum.REDDIT,
+            post_id="p-rejected",
+            reply_type=ReplyType.NEW_COMMENT,
+            status=DraftStatus.REJECTED,
+            angle_name="REDDIT-ANGLE-5: Rejected",
+        )
+        db.add(rejected)
+        await db.flush()
+        db.add(EngagementOutcome(draft_id=rejected.id, hours_after=24, got_response=True))
+        await db.commit()
+
+    async with pg_session_factory() as db:
+        hint = await get_top_angles_hint(db, org_id, "REDDIT")
+
+    assert hint == ""
