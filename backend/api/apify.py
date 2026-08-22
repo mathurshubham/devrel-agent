@@ -1,9 +1,3 @@
-# MERGE NOTE: this router is not wired up yet. backend/main.py must gain
-#   from backend.api.apify import router as apify_router
-#   app.include_router(apify_router)
-# It was left out of main.py deliberately to avoid conflicting with the
-# parallel rewrite of main.py/models.py/routers.
-
 """Org-facing API for the Apify token vault and cost visibility (PRD V7 §5.2).
 
 Tokens are stored encrypted with the org's current key version and are never
@@ -136,7 +130,7 @@ async def create_token(
         )
 
     row = OrgApifyToken(
-        org_id=session.org_id,
+        org_id=session["org_id"],
         label=payload.label.strip(),
         encrypted_token=encrypt(token, CURRENT_KEY_VERSION),
         encrypted_with_key_version=CURRENT_KEY_VERSION,
@@ -162,7 +156,7 @@ async def list_tokens(
     session=Depends(get_current_session),
 ):
     """List the org's vault tokens. Secrets are masked to the last four chars."""
-    rows = await _load_tokens(db, session.org_id)
+    rows = await _load_tokens(db, session["org_id"])
     out: list[ApifyTokenOut] = []
     for row in rows:
         vault = _to_vault_token(row)
@@ -187,7 +181,7 @@ async def update_token(
     session=Depends(get_current_session),
 ):
     """Adjust a token's plan cap or active flag."""
-    row = await _get_token_or_404(db, session.org_id, token_id)
+    row = await _get_token_or_404(db, session["org_id"], token_id)
     if payload.plan_cap_usd is not None:
         row.plan_cap_usd = payload.plan_cap_usd
     if payload.is_active is not None:
@@ -213,7 +207,7 @@ async def delete_token(
     session=Depends(get_current_session),
 ):
     """Remove a token from the vault."""
-    row = await _get_token_or_404(db, session.org_id, token_id)
+    row = await _get_token_or_404(db, session["org_id"], token_id)
     vault = _to_vault_token(row)
     await db.delete(row)
     await db.commit()
@@ -234,7 +228,7 @@ async def get_credits(
     session=Depends(get_current_session),
 ):
     """Per-token remaining Apify credit, served from the 10-minute Redis cache."""
-    rows = await _load_tokens(db, session.org_id, active_only=True)
+    rows = await _load_tokens(db, session["org_id"], active_only=True)
     vault_tokens = [vt for vt in (_to_vault_token(r) for r in rows) if vt]
 
     summaries = await ApifyTokenService().fetch_credit_summaries(vault_tokens)
@@ -253,7 +247,7 @@ async def get_cost_estimate(
     session=Depends(get_current_session),
 ):
     """Per-campaign monthly Apify cost projection and budget utilization."""
-    org_id = session.org_id
+    org_id = session["org_id"]
     org_settings = await _load_settings(db, org_id)
 
     result = await db.execute(
