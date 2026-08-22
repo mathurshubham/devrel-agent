@@ -1,6 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useApi } from "@/hooks/use-api";
 
+export type PillarTier = "PRIMARY" | "SECONDARY";
+
+export interface PillarTaxonomyEntry {
+    tag: string;
+    tier: PillarTier;
+}
+
 export interface OrgSettings {
     reply_hook: string | null;
     scout_prompt: string | null;
@@ -8,7 +15,7 @@ export interface OrgSettings {
     linkedin_stale_min_engagement: number | null;
     analyst_enabled: boolean;
     disclosure_reddit: boolean;
-    pillar_taxonomy: string[];
+    pillar_taxonomy: PillarTaxonomyEntry[] | null;
     apify_monthly_budget_usd: number;
 }
 

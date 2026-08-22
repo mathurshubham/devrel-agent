@@ -10,7 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { useOrgSettings, useUpdateOrgSettings, type OrgSettings } from "@/hooks/use-org-settings";
+import {
+    useOrgSettings,
+    useUpdateOrgSettings,
+    type OrgSettings,
+    type PillarTaxonomyEntry,
+    type PillarTier,
+} from "@/hooks/use-org-settings";
 
 const REPLY_HOOK_PRESETS: { id: string; label: string; text: string }[] = [
     { id: "banner", label: "Banner", text: "\n\n---\n*Disclosure: I work on the product this touches on.*" },
@@ -18,17 +24,20 @@ const REPLY_HOOK_PRESETS: { id: string; label: string; text: string }[] = [
     { id: "none", label: "None", text: "" },
 ];
 
-type FormState = Pick<
-    OrgSettings,
-    | "reply_hook"
-    | "scout_prompt"
-    | "linkedin_stale_days"
-    | "linkedin_stale_min_engagement"
-    | "analyst_enabled"
-    | "disclosure_reddit"
-    | "pillar_taxonomy"
-    | "apify_monthly_budget_usd"
->;
+type FormState = Omit<
+    Pick<
+        OrgSettings,
+        | "reply_hook"
+        | "scout_prompt"
+        | "linkedin_stale_days"
+        | "linkedin_stale_min_engagement"
+        | "analyst_enabled"
+        | "disclosure_reddit"
+        | "pillar_taxonomy"
+        | "apify_monthly_budget_usd"
+    >,
+    "pillar_taxonomy"
+> & { pillar_taxonomy: PillarTaxonomyEntry[] };
 
 function toFormState(settings: OrgSettings): FormState {
     return {
@@ -48,7 +57,8 @@ export function WorkspaceTab() {
     const updateSettings = useUpdateOrgSettings();
 
     const [form, setForm] = React.useState<FormState | null>(null);
-    const [newPillar, setNewPillar] = React.useState("");
+    const [newPillarTag, setNewPillarTag] = React.useState("");
+    const [newPillarTier, setNewPillarTier] = React.useState<PillarTier>("PRIMARY");
 
     React.useEffect(() => {
         if (settings) {
@@ -73,18 +83,28 @@ export function WorkspaceTab() {
     };
 
     const addPillar = () => {
-        const trimmed = newPillar.trim();
+        const trimmed = newPillarTag.trim().toUpperCase().replace(/\s+/g, "_");
         if (!trimmed) return;
-        if (form.pillar_taxonomy.includes(trimmed)) {
+        if (form.pillar_taxonomy.some((p) => p.tag === trimmed)) {
             toast.error("That pillar already exists");
             return;
         }
-        setForm({ ...form, pillar_taxonomy: [...form.pillar_taxonomy, trimmed] });
-        setNewPillar("");
+        setForm({ ...form, pillar_taxonomy: [...form.pillar_taxonomy, { tag: trimmed, tier: newPillarTier }] });
+        setNewPillarTag("");
+        setNewPillarTier("PRIMARY");
     };
 
-    const removePillar = (pillar: string) => {
-        setForm({ ...form, pillar_taxonomy: form.pillar_taxonomy.filter((p) => p !== pillar) });
+    const removePillar = (tag: string) => {
+        setForm({ ...form, pillar_taxonomy: form.pillar_taxonomy.filter((p) => p.tag !== tag) });
+    };
+
+    const toggleTier = (tag: string) => {
+        setForm({
+            ...form,
+            pillar_taxonomy: form.pillar_taxonomy.map((p) =>
+                p.tag === tag ? { ...p, tier: p.tier === "PRIMARY" ? "SECONDARY" : "PRIMARY" } : p
+            ),
+        });
     };
 
     const handleSave = async () => {
@@ -248,16 +268,30 @@ export function WorkspaceTab() {
                     <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Pillar taxonomy</h2>
                 </div>
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    Used by the Analyst&apos;s cluster step to tag each post with a primary/secondary pillar.
+                    Used by the Analyst&apos;s cluster step to tag each post with a pillar. PRIMARY pillars are
+                    surfaced aggressively; SECONDARY only when a post is specifically about them. Click a chip&apos;s
+                    tier badge to toggle it.
                 </p>
                 <div className="flex flex-wrap gap-2">
                     {form.pillar_taxonomy.length === 0 && (
                         <span className="text-xs text-muted-foreground italic">No pillars configured — the system default set will be used.</span>
                     )}
                     {form.pillar_taxonomy.map((pillar) => (
-                        <Badge key={pillar} variant="outline" className="gap-1.5 py-1 px-2 text-xs">
-                            {pillar}
-                            <button type="button" onClick={() => removePillar(pillar)} className="text-muted-foreground hover:text-destructive">
+                        <Badge key={pillar.tag} variant="outline" className="gap-1.5 py-1 px-2 text-xs">
+                            {pillar.tag}
+                            <button
+                                type="button"
+                                onClick={() => toggleTier(pillar.tag)}
+                                className={`text-[9px] font-bold uppercase font-mono px-1 rounded-sm ${
+                                    pillar.tier === "PRIMARY"
+                                        ? "bg-primary/15 text-primary"
+                                        : "bg-muted-foreground/15 text-muted-foreground"
+                                }`}
+                                title="Click to toggle tier"
+                            >
+                                {pillar.tier}
+                            </button>
+                            <button type="button" onClick={() => removePillar(pillar.tag)} className="text-muted-foreground hover:text-destructive">
                                 <X className="h-3 w-3" />
                             </button>
                         </Badge>
@@ -265,10 +299,10 @@ export function WorkspaceTab() {
                 </div>
                 <div className="flex gap-2">
                     <Input
-                        placeholder="Add a pillar (e.g. Vector Search)"
+                        placeholder="Add a pillar tag (e.g. VECTOR_SEARCH)"
                         className="h-9 text-sm shadow-none border-border/40"
-                        value={newPillar}
-                        onChange={(e) => setNewPillar(e.target.value)}
+                        value={newPillarTag}
+                        onChange={(e) => setNewPillarTag(e.target.value)}
                         onKeyDown={(e) => {
                             if (e.key === "Enter") {
                                 e.preventDefault();
@@ -276,6 +310,20 @@ export function WorkspaceTab() {
                             }
                         }}
                     />
+                    <div className="flex rounded-md border border-border/40 overflow-hidden shrink-0">
+                        {(["PRIMARY", "SECONDARY"] as PillarTier[]).map((t) => (
+                            <button
+                                key={t}
+                                type="button"
+                                onClick={() => setNewPillarTier(t)}
+                                className={`h-9 px-3 text-[10px] font-bold uppercase font-mono transition-colors ${
+                                    newPillarTier === t ? "bg-primary/10 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                                }`}
+                            >
+                                {t}
+                            </button>
+                        ))}
+                    </div>
                     <Button type="button" size="sm" className="h-9 text-[10px] uppercase font-mono shrink-0" onClick={addPillar}>
                         <Plus className="mr-1.5 h-3 w-3" />
                         Add
