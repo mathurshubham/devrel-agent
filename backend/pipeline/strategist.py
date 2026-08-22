@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Optional
+
+from backend.pipeline.llm_transport import extract_usage
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ async def run_strategist_batch(
     call_kwargs: dict,
     *,
     acompletion_fn=None,
+    usage_sink: Optional[list] = None,
 ) -> dict[str, str]:
     """Draft replies for up to ``BATCH_SIZE`` posts in a single LLM call.
 
@@ -59,6 +63,11 @@ async def run_strategist_batch(
     Returns ``{post_id: draft_text}``; missing keys mean the caller should
     fall back to a per-post call. Never raises -- a parse/call failure
     yields an empty dict so every item falls back.
+
+    ``usage_sink``, if given, gets one ``{"prompt_tokens", "completion_tokens"}``
+    dict appended for this call's actual usage (when the response carries
+    one) -- so the caller can meter this batch call into the org's recorded
+    LLM spend even though persist_gate's own cost check never sees it.
     """
     if acompletion_fn is None:
         from litellm import acompletion as acompletion_fn
@@ -76,6 +85,10 @@ async def run_strategist_batch(
         response = await acompletion_fn(
             model=model, messages=[{"role": "user", "content": prompt}], **call_kwargs
         )
+        if usage_sink is not None:
+            usage = extract_usage(response)
+            if usage is not None:
+                usage_sink.append(usage)
         content = response.choices[0].message.content or ""
         match = _JSON_ARRAY_RE.search(content)
         if not match:
@@ -93,7 +106,14 @@ async def run_strategist_batch(
         return {}
 
 
-async def run_strategist_single(item: dict, model: str, call_kwargs: dict, *, acompletion_fn=None) -> str:
+async def run_strategist_single(
+    item: dict,
+    model: str,
+    call_kwargs: dict,
+    *,
+    acompletion_fn=None,
+    usage_sink: Optional[list] = None,
+) -> str:
     """Per-post fallback draft call for a post missing from its batch response."""
     if acompletion_fn is None:
         from litellm import acompletion as acompletion_fn
@@ -115,4 +135,8 @@ async def run_strategist_single(item: dict, model: str, call_kwargs: dict, *, ac
     response = await acompletion_fn(
         model=model, messages=[{"role": "user", "content": prompt}], **call_kwargs
     )
+    if usage_sink is not None:
+        usage = extract_usage(response)
+        if usage is not None:
+            usage_sink.append(usage)
     return (response.choices[0].message.content or "").strip()

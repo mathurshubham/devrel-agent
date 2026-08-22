@@ -13,7 +13,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from backend.pipeline.llm_transport import structured_completion
+from backend.pipeline.llm_transport import extract_usage, structured_completion
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,11 @@ class ScoutSelection(BaseModel):
 
 class ScoutOutput(BaseModel):
     selections: list[ScoutSelection] = Field(default_factory=list)
+    #: Populated by ``run_scout`` after parsing, from the raw LLM response's
+    #: usage block -- not part of the LLM's own JSON payload. ``None`` when
+    #: the underlying response carried no usage info (mocks, some
+    #: providers). See ``backend.pipeline.llm_transport.extract_usage``.
+    usage: Optional[dict] = None
 
 
 def _format_post_for_scout(post: dict) -> str:
@@ -103,7 +108,8 @@ async def run_scout(
         return ScoutOutput(selections=[])
 
     prompt = build_scout_prompt(instructions, platform, angle_names, posts, hint)
-    parsed, _response = await structured_completion(
+    parsed, response = await structured_completion(
         prompt, model, ScoutOutput, call_kwargs, acompletion_fn=acompletion_fn
     )
+    parsed.usage = extract_usage(response)
     return parsed

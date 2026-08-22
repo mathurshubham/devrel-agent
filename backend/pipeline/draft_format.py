@@ -17,13 +17,25 @@ product:
 
 import re
 
-# Lines that look like an LLM-invented CTA/link -- dropped before the
-# configured hook is appended so a draft never carries two calls-to-action.
-_CTA_MARKERS = (
-    "http://", "https://", "www.",
+# A model-invented CTA/link line is dropped before the configured hook is
+# appended, so a draft never carries two calls-to-action. This used to be a
+# flat substring list including bare "http", "www.", and "explore " -- which
+# deleted perfectly legitimate prose that happened to contain any of those
+# substrings (a reply mentioning "explore" some idea, or "www.reddit.com"
+# as a citation, or the word "http" in a technical discussion). A line is
+# only a CTA now when it is *just* a URL, or it both carries a URL and reads
+# as promotional -- see ``_is_cta_line``.
+_URL_RE = re.compile(
+    r"(?:https?://\S+|www\.\S+|\b[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:/\S*)?\b)",
+    re.IGNORECASE,
+)
+_PROMO_PHRASES = (
     "explore ", "try our", "try out ", "check out our",
     "learn more at", "sign up at", "visit us at",
 )
+# Punctuation a URL-only line may be wrapped in (trailing period, brackets,
+# a leading dash/bullet remnant, ...).
+_URL_ONLY_STRIP_CHARS = " \t.,:;!?()[]{}<>-–—"
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]*)`")
@@ -56,6 +68,27 @@ def clean_draft(text: str) -> str:
     return text.strip()
 
 
+def _is_url_only_line(line: str) -> bool:
+    """The line is a URL and nothing else (ignoring surrounding punctuation)."""
+    stripped = line.strip()
+    if not stripped or not _URL_RE.search(stripped):
+        return False
+    remainder = _URL_RE.sub("", stripped).strip(_URL_ONLY_STRIP_CHARS)
+    return not remainder
+
+
+def _is_cta_line(line: str) -> bool:
+    """A line is a dropped CTA when it is URL-only, or a URL paired with
+    promotional language -- not for containing a bare substring like
+    "http" or "explore" on its own (see the module-level comment)."""
+    if _is_url_only_line(line):
+        return True
+    if not _URL_RE.search(line):
+        return False
+    lower = line.lower()
+    return any(phrase in lower for phrase in _PROMO_PHRASES)
+
+
 def finalize_draft(text: str, hook: str | None) -> str:
     """Clean the draft, drop any LLM-added CTA, and append the configured hook.
 
@@ -67,10 +100,7 @@ def finalize_draft(text: str, hook: str | None) -> str:
     body = clean_draft(text)
 
     # Drop any pre-existing CTA/link lines the model may have added.
-    kept = [
-        line for line in body.split("\n")
-        if not any(marker in line.lower() for marker in _CTA_MARKERS)
-    ]
+    kept = [line for line in body.split("\n") if not _is_cta_line(line)]
     body = "\n".join(kept)
     body = _MULTI_BLANK_RE.sub("\n\n", body).strip()
 

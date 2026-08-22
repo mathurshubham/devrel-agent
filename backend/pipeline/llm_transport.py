@@ -29,6 +29,31 @@ T = TypeVar("T", bound=BaseModel)
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$")
 
 
+def extract_usage(response: Any) -> Optional[dict]:
+    """Best-effort ``{"prompt_tokens", "completion_tokens"}`` off a litellm response.
+
+    Used to meter *actual* scout/strategist LLM usage into the org's
+    recorded spend (see ``backend.utils.cost_guard.record_llm_usage``) --
+    persist_gate's own cost check only ever estimated the strategist's
+    per-draft prompt+response tokens, so the scout call (one LLM call per
+    poll, over every prefiltered post) and any batch/fallback strategist
+    calls were previously invisible to the org's cost tracking entirely.
+    Returns ``None`` when the response has no usable usage info (a fake in
+    a unit test, a provider that omits it, ...).
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+    return {
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+    }
+
+
 def resolve_model(llm_config: Optional[OrgLLMConfig]) -> str:
     if llm_config and llm_config.model_name:
         return llm_config.model_name
