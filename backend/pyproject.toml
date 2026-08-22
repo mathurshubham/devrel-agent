@@ -25,6 +25,7 @@ dependencies = [
     "svix>=1.0.0",
     "pyjwt[crypto]>=2.9.0",
     "regex>=2026.2.28",
+    "psycopg[binary]>=3.2",
 ]
 
 [dependency-groups]

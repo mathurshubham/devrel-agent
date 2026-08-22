@@ -149,3 +149,26 @@ async def structured_completion(
 
     assert last_exc is not None
     raise last_exc
+
+
+async def text_completion(
+    prompt: str,
+    model: str,
+    call_kwargs: dict,
+    *,
+    acompletion_fn=None,
+) -> tuple[str, Any]:
+    """Plain-text (non-JSON) completion -- used by nodes that render prose
+    rather than a structured payload (e.g. the Analyst pipeline's Intel
+    Brief). Returns ``(text, raw_response)``; raises on any LLM failure or
+    empty content, same as ``structured_completion``."""
+    if acompletion_fn is None:
+        from litellm import acompletion as acompletion_fn  # local import: see structured_completion
+
+    response = await acompletion_fn(
+        model=model, messages=[{"role": "user", "content": prompt}], **call_kwargs
+    )
+    content = response.choices[0].message.content if response.choices else None
+    if not content:
+        raise ValueError("LLM returned empty content")
+    return content.strip(), response

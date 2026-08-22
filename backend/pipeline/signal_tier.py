@@ -3,13 +3,17 @@
 Ported from ``social-agent/backend/app/routers/pipeline.py::_compute_signal_tier``,
 adapted to V7: watch-list authors come from the org-scoped ``TargetAuthor``
 table (the MVP hardcoded a name list in code) rather than a literal constant.
+As of M3, the caller (``backend.pipeline.nodes.persist_gate_node``) passes
+only Tier 1 ``TargetAuthor`` rows ("always surface" per PRD V7 §5.6/§9) --
+Tier 2/3 rows feed the Analyst pipeline's own watch-list weighting instead.
 
 Buyer-persona job-title matching has no dedicated org-scoped table yet in the
-V7 schema (that lands with the Analyst milestone's buyer-persona work, §5.6) --
-this keeps the MVP's hardcoded title list as the M2-scope default. Engagement
+V7 schema -- the Analyst pipeline's ``buyer_persona`` tag (PRD §5.6) lives on
+per-post classifications, not as an org-editable title/keyword list -- so
+this keeps the MVP's hardcoded title list as the default. Engagement
 thresholds are likewise the MVP's literal defaults (10 / 50); the PRD notes
 these as "org-configurable" but no OrgSettings column exists for them yet.
-Both are called out as known M2 deviations.
+Both remain known deviations.
 """
 
 from __future__ import annotations
