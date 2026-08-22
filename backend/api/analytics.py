@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.ingestion.service import get_month_spend_usd, monthly_budget_usd
-from backend.models import DraftReply, DraftStatus, EngagementOutcome, OrgLLMConfig
+from backend.models import DraftReply, DraftStatus, EngagementOutcome, OrgLLMConfig, PlatformEnum
 from backend.pipeline.templates import top_angles
 from backend.utils.auth import get_current_session
 from backend.utils.cost_guard import _daily_tokens_key, _monthly_cost_key
@@ -25,46 +25,65 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
-
-def _engagement_total(outcome: EngagementOutcome) -> int:
-    return (outcome.reactions or 0) + (outcome.replies or 0) + (outcome.reposts or 0)
-
-
-async def _best_outcome_by_draft(db: AsyncSession, draft_ids: list[int]) -> dict[int, EngagementOutcome]:
-    """One outcome per draft -- the highest ``hours_after`` capture (a later
-    re-scrape supersedes an earlier one for "how did this land" purposes)."""
-    if not draft_ids:
-        return {}
-    outcomes = (
-        await db.execute(select(EngagementOutcome).where(EngagementOutcome.draft_id.in_(draft_ids)))
-    ).scalars().all()
-    best: dict[int, EngagementOutcome] = {}
-    for o in outcomes:
-        existing = best.get(o.draft_id)
-        if existing is None or (o.hours_after or 0) > (existing.hours_after or 0):
-            best[o.draft_id] = o
-    return best
+#: Default/max lookback window for /summary -- unbounded meant loading
+#: every DraftReply (and every EngagementOutcome for every draft) the org
+#: has ever had into memory on every request.
+_DEFAULT_SUMMARY_LOOKBACK_DAYS = 90
+_MAX_SUMMARY_LOOKBACK_DAYS = 365
 
 
 @router.get("/summary")
 async def get_analytics_summary(
+    days: int = Query(_DEFAULT_SUMMARY_LOOKBACK_DAYS, ge=1, le=_MAX_SUMMARY_LOOKBACK_DAYS),
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session),
     redis_client=Depends(get_redis),
 ):
     """Angle leaderboard (per platform), platform performance, draft totals
-    + reject-reason breakdown, and LLM/Apify spend meters."""
+    + reject-reason breakdown, and LLM/Apify spend meters, over the last
+    ``days`` days (default 90).
+
+    Every count/sum below is computed SQL-side (``GROUP BY``, a window
+    function for "the latest EngagementOutcome capture per draft") rather
+    than loading every ``DraftReply``/``EngagementOutcome`` row for the org
+    into Python -- the result cardinality is bounded by the number of
+    distinct (platform, angle, status) combinations, not by how many drafts
+    the org has ever had.
+    """
     org_id = session["org_id"]
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-    drafts = (await db.execute(select(DraftReply).where(DraftReply.org_id == org_id))).scalars().all()
-    best_outcome = await _best_outcome_by_draft(db, [d.id for d in drafts])
+    # ── Totals + reject-reason breakdown ────────────────────────────────
+    totals_rows = (
+        await db.execute(
+            select(DraftReply.status, DraftReply.reject_reason, func.count())
+            .where(DraftReply.org_id == org_id, DraftReply.created_at >= cutoff)
+            .group_by(DraftReply.status, DraftReply.reject_reason)
+        )
+    ).all()
 
-    total_drafted = len(drafts)
-    total_posted = sum(1 for d in drafts if d.status == DraftStatus.POSTED)
-    total_rejected = sum(1 for d in drafts if d.status == DraftStatus.REJECTED)
-    reject_reasons = Counter(
-        (d.reject_reason or "unspecified") for d in drafts if d.status == DraftStatus.REJECTED
-    )
+    total_drafted = 0
+    total_posted = 0
+    total_rejected = 0
+    reject_reasons: Counter = Counter()
+    for status_val, reject_reason, cnt in totals_rows:
+        total_drafted += cnt
+        if status_val == DraftStatus.POSTED:
+            total_posted += cnt
+        elif status_val == DraftStatus.REJECTED:
+            total_rejected += cnt
+            reject_reasons[reject_reason or "unspecified"] += cnt
+
+    # ── Drafted/posted/rejected per (platform, angle) -- platform-level
+    # totals are just this summed over angle, so one grouped query covers
+    # both the angle leaderboard and platform-performance counts. ───────
+    counts_rows = (
+        await db.execute(
+            select(DraftReply.platform, DraftReply.angle_name, DraftReply.status, func.count())
+            .where(DraftReply.org_id == org_id, DraftReply.created_at >= cutoff)
+            .group_by(DraftReply.platform, DraftReply.angle_name, DraftReply.status)
+        )
+    ).all()
 
     angle_stats: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"drafted": 0, "posted": 0, "engagement_sum": 0, "engagement_n": 0}
@@ -73,27 +92,70 @@ async def get_analytics_summary(
         lambda: {"drafted": 0, "posted": 0, "rejected": 0, "engagement_sum": 0, "engagement_n": 0}
     )
 
-    for d in drafts:
-        platform = d.platform.value if d.platform else "UNKNOWN"
-        angle = d.angle_name or "Unknown"
-        angle_bucket = angle_stats[(platform, angle)]
-        platform_bucket = platform_stats[platform]
+    for platform_val, angle_name, status_val, cnt in counts_rows:
+        platform = platform_val.value if platform_val else "UNKNOWN"
+        angle = angle_name or "Unknown"
+        angle_stats[(platform, angle)]["drafted"] += cnt
+        platform_stats[platform]["drafted"] += cnt
+        if status_val == DraftStatus.POSTED:
+            angle_stats[(platform, angle)]["posted"] += cnt
+            platform_stats[platform]["posted"] += cnt
+        elif status_val == DraftStatus.REJECTED:
+            platform_stats[platform]["rejected"] += cnt
 
-        angle_bucket["drafted"] += 1
-        platform_bucket["drafted"] += 1
+    # ── Engagement: the highest ``hours_after`` capture per draft (a later
+    # re-scrape supersedes an earlier one), summed per (platform, angle)
+    # for POSTED drafts -- a window function picks "latest capture per
+    # draft" SQL-side instead of fetching every outcome row. Platform-level
+    # engagement is this summed over angle, same as the counts above. ───
+    latest_capture_rank = (
+        func.row_number()
+        .over(partition_by=EngagementOutcome.draft_id, order_by=EngagementOutcome.hours_after.desc())
+        .label("rn")
+    )
+    ranked_outcomes = (
+        select(
+            EngagementOutcome.draft_id.label("draft_id"),
+            (
+                func.coalesce(EngagementOutcome.reactions, 0)
+                + func.coalesce(EngagementOutcome.replies, 0)
+                + func.coalesce(EngagementOutcome.reposts, 0)
+            ).label("engagement"),
+            latest_capture_rank,
+        )
+    ).subquery()
+    best_outcome = (
+        select(ranked_outcomes.c.draft_id, ranked_outcomes.c.engagement)
+        .where(ranked_outcomes.c.rn == 1)
+    ).subquery()
 
-        if d.status == DraftStatus.POSTED:
-            angle_bucket["posted"] += 1
-            platform_bucket["posted"] += 1
-            outcome = best_outcome.get(d.id)
-            if outcome:
-                engagement = _engagement_total(outcome)
-                angle_bucket["engagement_sum"] += engagement
-                angle_bucket["engagement_n"] += 1
-                platform_bucket["engagement_sum"] += engagement
-                platform_bucket["engagement_n"] += 1
-        elif d.status == DraftStatus.REJECTED:
-            platform_bucket["rejected"] += 1
+    engagement_rows = (
+        await db.execute(
+            select(
+                DraftReply.platform,
+                DraftReply.angle_name,
+                func.sum(best_outcome.c.engagement),
+                func.count(),
+            )
+            .join(best_outcome, best_outcome.c.draft_id == DraftReply.id)
+            .where(
+                DraftReply.org_id == org_id,
+                DraftReply.created_at >= cutoff,
+                DraftReply.status == DraftStatus.POSTED,
+            )
+            .group_by(DraftReply.platform, DraftReply.angle_name)
+        )
+    ).all()
+
+    for platform_val, angle_name, engagement_sum, engagement_n in engagement_rows:
+        platform = platform_val.value if platform_val else "UNKNOWN"
+        angle = angle_name or "Unknown"
+        engagement_sum = int(engagement_sum or 0)
+        engagement_n = int(engagement_n or 0)
+        angle_stats[(platform, angle)]["engagement_sum"] += engagement_sum
+        angle_stats[(platform, angle)]["engagement_n"] += engagement_n
+        platform_stats[platform]["engagement_sum"] += engagement_sum
+        platform_stats[platform]["engagement_n"] += engagement_n
 
     def _rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 2) if denominator else 0.0
@@ -170,13 +232,18 @@ async def get_analytics_summary(
 
 @router.get("/top-angles")
 async def get_top_angles_endpoint(
-    platform: str,
-    limit: int = 5,
+    platform: PlatformEnum,
+    limit: int = Query(5, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session),
 ):
     """Top N angles by 30-day response rate for one platform -- the same
-    ranking that feeds the Scout-prompt feedback hint (PRD V7 §5.7)."""
+    ranking that feeds the Scout-prompt feedback hint (PRD V7 §5.7).
+
+    ``platform`` is validated against ``PlatformEnum`` (a bogus value 422s
+    instead of silently falling through to "no rows match, empty result")
+    and ``limit`` is bounded 1..50.
+    """
     org_id = session["org_id"]
-    ranked = await top_angles(db, org_id, platform, limit=limit)
+    ranked = await top_angles(db, org_id, platform.value, limit=limit)
     return [{"angle": name, "response_rate": round(rate, 2)} for name, rate in ranked]
