@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
@@ -14,9 +15,13 @@ from backend.utils.audit import write_audit_log
 router = APIRouter(prefix="/api/prompts", tags=["Prompts"])
 
 
-async def _is_org_admin_or_super(db: AsyncSession, session: dict) -> bool:
-    if session.get("role") == UserRole.ADMIN.value:
-        return True
+async def _is_super_admin(db: AsyncSession, session: dict) -> bool:
+    """
+    System-default templates (org_id IS NULL) are platform-wide, not
+    org-scoped -- editing/deleting them must require the platform
+    SUPER_ADMIN role on the caller's own User row, not just an ADMIN role on
+    their org membership (which any org owner can have).
+    """
     user = await db.get(User, session["user_id"])
     return bool(user and user.role == UserRole.SUPER_ADMIN)
 
@@ -50,7 +55,14 @@ async def create_prompt(
         version=1
     )
     db.add(new_template)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A prompt template named '{payload.name}' already exists for this organization.",
+        )
     await db.refresh(new_template)
 
     await write_audit_log(
@@ -98,7 +110,7 @@ async def update_prompt(
     is_system_default = prompt.org_id is None
 
     if is_system_default:
-        if not await _is_org_admin_or_super(db, session):
+        if not await _is_super_admin(db, session):
             raise HTTPException(status_code=403, detail="Cannot edit system default templates")
     elif prompt.org_id != org_id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -116,7 +128,14 @@ async def update_prompt(
         user_id=session["user_id"]
     )
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A prompt template named '{prompt.name}' already exists for this organization.",
+        )
     await db.refresh(prompt)
     return prompt
 
@@ -137,7 +156,7 @@ async def delete_prompt(
     is_system_default = prompt.org_id is None
 
     if is_system_default:
-        if not await _is_org_admin_or_super(db, session):
+        if not await _is_super_admin(db, session):
             raise HTTPException(status_code=403, detail="Cannot delete system default templates")
     elif prompt.org_id != org_id:
         raise HTTPException(status_code=403, detail="Access denied")
