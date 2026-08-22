@@ -39,13 +39,19 @@ services:
         --concurrency=2
         --loglevel=info
     env_file: .env
-    depends_on: [ backend ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      backend: { condition: service_started }
 
   beat:
     build: ./backend
     command: celery -A backend.celery_app beat --loglevel=info
     env_file: .env
-    depends_on: [ worker_all ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      worker_all: { condition: service_started }
 
   frontend:
     build: ./frontend

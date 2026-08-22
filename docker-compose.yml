@@ -23,7 +23,7 @@ services:
     # Alembic runs migrations + seed before Uvicorn starts — idempotent on every restart.
     # --proxy-headers and --forwarded-allow-ips required for Cloudflare tunnel / ngrok / nginx.
     ports:
-      - "8000:8000" # <--- MUST ADD THIS LINE
+      - "8000:8000"
     command: >
       sh -c 'cd backend && alembic upgrade head && cd .. &&
              python -m backend.seed &&
@@ -38,25 +38,37 @@ services:
     build: ./backend
     command: celery -A backend.celery_app worker -Q scraper --concurrency=4 --loglevel=info
     env_file: .env
-    depends_on: [ backend ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      backend: { condition: service_started }
 
   worker_langgen:
     build: ./backend
     command: celery -A backend.celery_app worker -Q langgen --concurrency=8 --loglevel=info
     env_file: .env
-    depends_on: [ backend ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      backend: { condition: service_started }
 
   worker_maintenance:
     build: ./backend
     command: celery -A backend.celery_app worker -Q maintenance --concurrency=1 --loglevel=info
     env_file: .env
-    depends_on: [ backend ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      backend: { condition: service_started }
 
   beat:
     build: ./backend
     command: celery -A backend.celery_app beat --loglevel=info
     env_file: .env
-    depends_on: [ worker_maintenance ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      worker_maintenance: { condition: service_started }
 
   # Optional observability stack — controlled by ENABLE_METRICS env var.
   # To include: docker-compose --profile metrics up -d
