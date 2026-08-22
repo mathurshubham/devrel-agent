@@ -267,7 +267,7 @@ def upgrade() -> None:
     sa.Column('locked_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['campaign_id'], ['campaigns.id'], ),
+    sa.ForeignKeyConstraint(['campaign_id'], ['campaigns.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['locked_by_user_id'], ['users.id'], ),
     sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -395,4 +395,6 @@ def downgrade() -> None:
     ):
         op.execute(f"DROP TYPE IF EXISTS {enum_name}")
 
-    op.execute('DROP EXTENSION IF EXISTS pg_trgm')
+    # Intentionally NOT dropping pg_trgm here: it's a database-wide extension
+    # that other schemas/roles may depend on, and dropping it is almost never
+    # what you want from a single migration's downgrade path.

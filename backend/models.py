@@ -214,7 +214,9 @@ class Campaign(Base):
     updated_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     organization : Mapped["Organization"]     = relationship(back_populates="campaigns")
-    drafts       : Mapped[List["DraftReply"]] = relationship(back_populates="campaign")
+    drafts       : Mapped[List["DraftReply"]] = relationship(
+        back_populates="campaign", passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("idx_campaign_keywords_gin", "keywords", postgresql_using="gin"),
@@ -230,7 +232,7 @@ class DraftReply(Base):
 
     id          : Mapped[int] = mapped_column(primary_key=True)
     org_id      : Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
-    campaign_id : Mapped[int] = mapped_column(ForeignKey("campaigns.id"))
+    campaign_id : Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"))
 
     platform : Mapped[PlatformEnum] = mapped_column(index=True)
     post_id  : Mapped[str]          = mapped_column(String(100), index=True)
