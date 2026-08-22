@@ -6,21 +6,22 @@ from typing import Optional
 
 from fastapi import APIRouter, Request, Header, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from svix.webhooks import Webhook
 
 from backend.database import SessionLocal
-from backend.models import User, Organization, ProcessedWebhookEvent, UserRole
+from backend.models import User, Organization, OrgMembership, ProcessedWebhookEvent, UserRole
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Webhooks"])
 
+
 async def get_db():
     async with SessionLocal() as session:
         yield session
+
 
 @router.post("/clerk")
 async def clerk_webhook(
@@ -30,19 +31,16 @@ async def clerk_webhook(
     svix_signature: str = Header(None, alias="svix-signature"),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Clerk Webhook Sync Endpoint.
-    TRD Sections 3.1, 6, and 12 implementation.
-    """
+    """Clerk webhook sync endpoint: keeps Organization/User/OrgMembership rows in sync."""
     WEBHOOK_SECRET = os.getenv("CLERK_WEBHOOK_SECRET")
     if not WEBHOOK_SECRET:
         logger.error("CLERK_WEBHOOK_SECRET not set")
         raise HTTPException(status_code=500, detail="Webhook secret not configured")
 
-    # 1. Replay Attack Guard (TRD Sec 3.1 & 6)
+    # 1. Replay attack guard.
     if not svix_timestamp:
         raise HTTPException(status_code=400, detail="Missing timestamp")
-    
+
     try:
         ts = int(svix_timestamp)
     except ValueError:
@@ -53,11 +51,10 @@ async def clerk_webhook(
         logger.warning(f"Replay attack detected. Timestamp: {ts}, Now: {now}")
         raise HTTPException(status_code=400, detail="Webhook timestamp too old — replay rejected")
 
-    # 2. HMAC Signature Verification
+    # 2. HMAC signature verification.
     body = await request.body()
     wh = Webhook(WEBHOOK_SECRET)
     try:
-        # svix headers are case-sensitive and must be passed as a dict
         evt = wh.verify(body.decode(), {
             "svix-id": svix_id,
             "svix-timestamp": svix_timestamp,
@@ -67,45 +64,46 @@ async def clerk_webhook(
         logger.warning(f"Invalid webhook signature: {str(e)}")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # 3. Idempotency via Database (TRD Sec 3.1 & 12)
-    # INSERT ... ON CONFLICT DO NOTHING using svix-id
+    # 3. Idempotency via svix-id (INSERT ... ON CONFLICT DO NOTHING).
     processed_stmt = pg_insert(ProcessedWebhookEvent).values(
-        event_id=svix_id,
-        event_type=evt.get("type", "unknown"),
+        svix_id=svix_id,
         processed_at=datetime.now(timezone.utc)
-    ).on_conflict_do_nothing(index_elements=["event_id"])
-    
+    ).on_conflict_do_nothing(index_elements=["svix_id"])
+
     result = await db.execute(processed_stmt)
     if result.rowcount == 0:
         logger.info(f"Duplicate webhook event {svix_id} skipped.")
         return {"ok": True, "skipped": "duplicate"}
 
-    # 4. Clerk Event Handlers
+    # 4. Clerk event handlers.
     evt_type = evt.get("type")
     data = evt.get("data", {})
 
     try:
         if evt_type in ["user.created", "user.updated"]:
-            clerk_id = data.get("id")
+            clerk_user_id = data.get("id")
             emails = data.get("email_addresses", [])
             primary_email = emails[0].get("email_address") if emails else ""
-            
+
             user_stmt = pg_insert(User).values(
-                clerk_id=clerk_id,
+                clerk_user_id=clerk_user_id,
                 email=primary_email,
-                role=UserRole.MEMBER, # Default
-                is_active=True
+                role=UserRole.MEMBER,
             ).on_conflict_do_update(
-                index_elements=["clerk_id"],
+                index_elements=["clerk_user_id"],
                 set_={"email": primary_email}
             )
             await db.execute(user_stmt)
 
         elif evt_type == "user.deleted":
-            clerk_id = data.get("id")
-            await db.execute(
-                update(User).where(User.clerk_id == clerk_id).values(is_active=False)
-            )
+            clerk_user_id = data.get("id")
+            user_res = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
+            user = user_res.scalar_one_or_none()
+            if user:
+                # users has no soft-delete flag in V7 — revoke org access instead.
+                await db.execute(
+                    OrgMembership.__table__.delete().where(OrgMembership.user_id == user.id)
+                )
 
         elif evt_type == "organization.created":
             clerk_org_id = data.get("id")
@@ -117,21 +115,42 @@ async def clerk_webhook(
             ).on_conflict_do_nothing(index_elements=["clerk_org_id"])
             await db.execute(org_stmt)
 
-        elif evt_type == "organizationMembership.created":
+        elif evt_type in ("organizationMembership.created", "organizationMembership.updated"):
             clerk_org_id = data.get("organization", {}).get("id")
             clerk_user_id = data.get("public_user_data", {}).get("user_id")
-            clerk_role = data.get("role") # 'org:admin' or 'org:member'
-            
-            # Resolve our internal org id
-            org_res = await db.execute(select(Organization).filter(Organization.clerk_org_id == clerk_org_id))
+            clerk_role = data.get("role")  # 'org:admin' or 'org:member'
+
+            org_res = await db.execute(select(Organization).where(Organization.clerk_org_id == clerk_org_id))
             org = org_res.scalar_one_or_none()
-            
-            if org:
+
+            user_res = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
+            user = user_res.scalar_one_or_none()
+
+            if org and user:
                 internal_role = UserRole.ADMIN if clerk_role == "org:admin" else UserRole.MEMBER
+                membership_stmt = pg_insert(OrgMembership).values(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role=internal_role.value,
+                ).on_conflict_do_update(
+                    index_elements=["org_id", "user_id"],
+                    set_={"role": internal_role.value},
+                )
+                await db.execute(membership_stmt)
+
+        elif evt_type == "organizationMembership.deleted":
+            clerk_org_id = data.get("organization", {}).get("id")
+            clerk_user_id = data.get("public_user_data", {}).get("user_id")
+
+            org_res = await db.execute(select(Organization).where(Organization.clerk_org_id == clerk_org_id))
+            org = org_res.scalar_one_or_none()
+            user_res = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
+            user = user_res.scalar_one_or_none()
+
+            if org and user:
                 await db.execute(
-                    update(User).where(User.clerk_id == clerk_user_id).values(
-                        org_id=org.id,
-                        role=internal_role
+                    OrgMembership.__table__.delete().where(
+                        OrgMembership.org_id == org.id, OrgMembership.user_id == user.id
                     )
                 )
 
@@ -145,9 +164,6 @@ async def clerk_webhook(
     except Exception as e:
         await db.rollback()
         logger.error(f"Error processing Clerk event {evt_type}: {str(e)}")
-        # We don't raise 500 here to avoid Clerk retrying infinitely if it's a data issue,
-        # but in a real prod env we might want to fail so Clerk retries transient DB errors.
-        # TRD doesn't explicitly mandate 500 on data errors, but does mandate idempotency.
         raise HTTPException(status_code=500, detail="Internal processing error")
 
     return {"received": True}

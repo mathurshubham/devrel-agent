@@ -23,12 +23,15 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Add the virtual environment to the PATH
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH=/app
 
-# Copy the source code
-COPY . .
+# The build context is the backend/ directory itself; nest it under
+# /app/backend so `backend` is importable as a top-level package
+# (uvicorn backend.main:app, celery -A backend.celery_app, python -m backend.seed).
+COPY . ./backend
 
 # Expose the port
 EXPOSE 8000
 
 # The command is overridden by docker-compose, but we provide a default
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips='*'"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips='*'"]

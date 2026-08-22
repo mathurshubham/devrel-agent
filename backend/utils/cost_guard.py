@@ -3,6 +3,7 @@ import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
 import litellm
 from backend.models import OrgLLMConfig
+from backend.utils.org_lookups import get_org_llm_config
 
 class CostLimitExceeded(Exception):
     """Raised when an organization's LLM cost or token limit is breached."""
@@ -29,7 +30,7 @@ async def check_and_record_llm_usage(
     
     Teammate 2: Protects against runaway costs from high-volume Reddit matches.
     """
-    llm_config = await db.get(OrgLLMConfig, org_id)
+    llm_config = await get_org_llm_config(db, org_id)
     if not llm_config:
         return
 
