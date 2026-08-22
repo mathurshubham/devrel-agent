@@ -725,9 +725,17 @@ async def persist_gate_node(state: PipelineState, config: RunnableConfig) -> dic
         # once per run (finding: "cache the org LLM config once per run").
         llm_config = await get_org_llm_config(db, org_id)
 
+        # Tier 1 only (PRD V7 §5.6/§9: "always surface" watch-list voices) --
+        # Tier 2/3 TargetAuthor rows feed the Analyst pipeline's own
+        # watch-list weighting (backend.pipeline.analyst_nodes), not this
+        # HIGH-tier signal check.
         watch_names = list(
             (
-                await db.execute(select(TargetAuthor.name).where(TargetAuthor.org_id == org_id))
+                await db.execute(
+                    select(TargetAuthor.name).where(
+                        TargetAuthor.org_id == org_id, TargetAuthor.tier == 1
+                    )
+                )
             )
             .scalars()
             .all()
