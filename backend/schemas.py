@@ -310,6 +310,7 @@ class IntelBriefSummary(BaseModel):
     id: int
     org_id: int
     week_of: date
+    model_config = ConfigDict(from_attributes=True)
 
 
 class IntelBriefDetail(IntelBriefSummary):
