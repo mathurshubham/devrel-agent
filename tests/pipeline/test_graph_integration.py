@@ -71,6 +71,16 @@ async def _skip_unless_postgres_up():
         pytest.skip(f"Postgres not reachable at {TEST_DATABASE_URL}; skipping graph integration tests")
 
 
+#: langgraph-checkpoint-postgres creates these itself via raw SQL
+#: (``AsyncPostgresSaver.setup()``) -- they are not part of ``Base.metadata``,
+#: so ``Base.metadata.drop_all`` below never touches them. Left alone, a
+#: checkpoint-resume test leaves its checkpoint rows sitting in the shared
+#: "test" database for every later test in the run, on tables that never
+#: get recreated fresh -- drop them explicitly (``IF EXISTS``, so it is a
+#: no-op for a test that never touched checkpointing).
+_CHECKPOINT_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints", "checkpoint_migrations")
+
+
 @pytest.fixture
 async def pg_session_factory(_skip_unless_postgres_up):
     engine = create_async_engine(TEST_DATABASE_URL)
@@ -84,6 +94,8 @@ async def pg_session_factory(_skip_unless_postgres_up):
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
+            for table in _CHECKPOINT_TABLES:
+                await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
         await engine.dispose()
 
 
@@ -169,7 +181,9 @@ def _mock_scout(selections: list[ScoutSelection]):
 
 
 def _mock_strategist_batch(prefix: str = "Draft for"):
-    async def _fake(items, model, call_kwargs, *, acompletion_fn=None):
+    async def _fake(items, model, call_kwargs, *, acompletion_fn=None, usage_sink=None):
+        if usage_sink is not None:
+            usage_sink.append({"prompt_tokens": 10, "completion_tokens": 5})
         return {item["post_id"]: f"{prefix} {item['post_id']}" for item in items}
 
     return _fake
