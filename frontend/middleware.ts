@@ -4,7 +4,7 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 // /select-org MUST be in this list (not the org-gated one below) so an
 // org-less user can actually reach it — putting it behind the org check
 // would redirect it to itself forever.
-const isAuthRequired = createRouteMatcher(['/dashboard(.*)', '/select-org(.*)']);
+const isAuthRequired = createRouteMatcher(['/dashboard(.*)', '/select-org(.*)', '/admin(.*)']);
 // Routes that additionally require an active Clerk organization.
 const isOrgRequired = createRouteMatcher(['/dashboard(.*)']);
 const isAdminRoute = createRouteMatcher(['/dashboard/settings(.*)', '/admin(.*)']);

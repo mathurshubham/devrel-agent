@@ -32,11 +32,9 @@ export function Breadcrumbs() {
     const pathname = usePathname();
     const segments = pathname.split("/").filter(Boolean);
 
-    // Always root the breadcrumb at "Sentinel -> Dashboard" even off /dashboard.
-    const crumbs =
-        segments[0] === "dashboard"
-            ? segments
-            : ["dashboard", ...segments];
+    // Use the real path segments; non-dashboard routes (e.g. /admin) keep
+    // their own hrefs instead of being wrongly nested under /dashboard.
+    const crumbs = segments.length > 0 ? segments : ["dashboard"];
 
     return (
         <Breadcrumb>
