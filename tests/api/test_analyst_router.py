@@ -133,6 +133,30 @@ async def test_forecast_empty_history_returns_stable_shape(client):
     assert body["recommended_focus"] == []
 
 
+async def test_forecast_ranks_trending_and_declining_pillars(client, fake_db):
+    this_week = current_week_of()
+    from datetime import timedelta
+
+    prev_week = this_week - timedelta(days=7)
+    rows = [
+        ("METRICS_ILLUSION", 2, prev_week),
+        ("METRICS_ILLUSION", 5, this_week),  # rising: +3
+        ("RAG_GROUNDEDNESS", 4, prev_week),
+        ("RAG_GROUNDEDNESS", 1, this_week),  # falling: -3
+    ]
+    fake_db.queue_execute_result(scalars_all=rows)
+
+    async with client as ac:
+        resp = await ac.get("/api/analyst/forecast")
+
+    body = resp.json()
+    assert body["trending"][0]["pillar"] == "METRICS_ILLUSION"
+    assert body["trending"][0]["delta"] == 3
+    assert body["declining"][0]["pillar"] == "RAG_GROUNDEDNESS"
+    assert body["declining"][0]["delta"] == -3
+    assert "METRICS_ILLUSION" in body["recommended_focus"]
+
+
 async def test_list_authors_empty(client):
     async with client as ac:
         resp = await ac.get("/api/analyst/authors")
