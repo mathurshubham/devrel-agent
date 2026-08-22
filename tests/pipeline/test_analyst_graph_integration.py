@@ -17,7 +17,7 @@ import os
 import time
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 import backend.pipeline.analyst_nodes as analyst_nodes_module
@@ -64,6 +64,7 @@ async def _skip_unless_postgres_up():
 async def pg_session_factory(_skip_unless_postgres_up):
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
 
     session_local = async_sessionmaker(bind=engine, expire_on_commit=False)
