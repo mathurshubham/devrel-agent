@@ -248,7 +248,7 @@ export function WorkspaceTab() {
                     <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Pillar taxonomy</h2>
                 </div>
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    Used by the Analyst's cluster step to tag each post with a primary/secondary pillar.
+                    Used by the Analyst&apos;s cluster step to tag each post with a primary/secondary pillar.
                 </p>
                 <div className="flex flex-wrap gap-2">
                     {form.pillar_taxonomy.length === 0 && (

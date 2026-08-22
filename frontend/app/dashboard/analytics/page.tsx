@@ -51,7 +51,7 @@ export default function AnalyticsPage() {
                     <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                    Angle performance, acceptance rates, and spend against your org's caps.
+                    Angle performance, acceptance rates, and spend against your org&apos;s caps.
                 </p>
             </div>
 
