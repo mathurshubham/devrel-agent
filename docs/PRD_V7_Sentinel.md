@@ -308,5 +308,5 @@ Celery queues: `scraper` (Apify ingest), `langgen` (both graphs), `maintenance` 
 | O1 | Monetization: plans/quotas/payment provider for hosted tier | Shubham | V1 ships self-host + invite-only hosted, no billing |
 | O2 | OSS license (product is called OSS throughout) | Shubham | Apache-2.0 |
 | O3 | Disclosure default per platform (§5.8) — exact copy | Shubham | On for Reddit product-mentions; off elsewhere |
-| O5 | Hosted-tier Apify account model: platform-owned pooled tokens vs strict BYOK | Shubham | Strict BYOK |
-| O6 | Actor version pinning policy (actors mutate under fixed IDs) | Eng | Pin via org override + weekly canary dry-run alert |
+| O4 | Hosted-tier Apify account model: platform-owned pooled tokens vs strict BYOK | Shubham | Strict BYOK |
+| O5 | Actor version pinning policy (actors mutate under fixed IDs) | Eng | Pin via org override + weekly canary dry-run alert |
