@@ -17,6 +17,8 @@ const SEGMENT_LABELS: Record<string, string> = {
     dashboard: "Sentinel",
     inbox: "Inbox",
     campaigns: "Campaigns",
+    intel: "Intel",
+    analytics: "Analytics",
     prompts: "Prompts",
     safety: "Safety",
     settings: "Settings",

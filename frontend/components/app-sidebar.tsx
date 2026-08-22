@@ -11,7 +11,9 @@ import {
     ChevronRight,
     MoreHorizontal,
     Plus,
-    BookOpen
+    BookOpen,
+    Radar,
+    LineChart
 } from "lucide-react";
 
 import {
@@ -64,6 +66,16 @@ const items = [
         title: "Campaigns",
         url: "/dashboard/campaigns",
         icon: BarChart3,
+    },
+    {
+        title: "Intel",
+        url: "/dashboard/intel",
+        icon: Radar,
+    },
+    {
+        title: "Analytics",
+        url: "/dashboard/analytics",
+        icon: LineChart,
     },
     {
         title: "Safety Profiles",
