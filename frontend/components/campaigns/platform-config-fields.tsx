@@ -8,7 +8,7 @@ import type { Platform } from "@/hooks/use-campaigns";
 export interface RedditConfig {
     sort: "top" | "new";
     time_filter: "day" | "week";
-    max_posts: number;
+    max_posts_per_source: number;
     max_comments_per_post: number;
 }
 
@@ -21,7 +21,7 @@ export interface LinkedInConfig {
 
 export interface TwitterConfig {
     query_type: "Latest" | "Top";
-    max_items: number;
+    limit: number;
     lang: string;
     min_retweets: number;
     min_faves: number;
@@ -30,11 +30,12 @@ export interface TwitterConfig {
 
 export type PlatformConfig = RedditConfig | LinkedInConfig | TwitterConfig;
 
-// Defaults per PRD §5.1.
+// Defaults per PRD §5.1 -- key names match backend/ingestion/inputs.py's
+// platform_config reads exactly (max_posts_per_source, limit, etc.).
 export const DEFAULT_PLATFORM_CONFIG: Record<Platform, PlatformConfig> = {
-    REDDIT: { sort: "top", time_filter: "week", max_posts: 15, max_comments_per_post: 5 },
+    REDDIT: { sort: "top", time_filter: "week", max_posts_per_source: 15, max_comments_per_post: 5 },
     LINKEDIN: { limit: 30, sort_type: "date_posted", date_filter: "any", exact_match: false },
-    TWITTER: { query_type: "Latest", max_items: 20, lang: "en", min_retweets: 0, min_faves: 0, min_replies: 0 },
+    TWITTER: { query_type: "Latest", limit: 20, lang: "en", min_retweets: 0, min_faves: 0, min_replies: 0 },
 };
 
 function ToggleGroup<T extends string>({
@@ -99,9 +100,9 @@ export function PlatformConfigFields({
                         type="number"
                         min={1}
                         className="h-9 text-sm bg-muted/20 border-border/40"
-                        value={c.max_posts}
+                        value={c.max_posts_per_source}
                         disabled={disabled}
-                        onChange={(e) => onChange({ ...c, max_posts: parseInt(e.target.value) || 0 })}
+                        onChange={(e) => onChange({ ...c, max_posts_per_source: parseInt(e.target.value) || 0 })}
                     />
                 </Field>
                 <Field label="Max comments / post">
@@ -173,9 +174,9 @@ export function PlatformConfigFields({
                     type="number"
                     min={1}
                     className="h-9 text-sm bg-muted/20 border-border/40"
-                    value={c.max_items}
+                    value={c.limit}
                     disabled={disabled}
-                    onChange={(e) => onChange({ ...c, max_items: parseInt(e.target.value) || 0 })}
+                    onChange={(e) => onChange({ ...c, limit: parseInt(e.target.value) || 0 })}
                 />
             </Field>
             <Field label="Language">
