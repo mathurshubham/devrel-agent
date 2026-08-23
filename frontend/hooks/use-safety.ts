@@ -17,7 +17,7 @@ export function useSafetyProfiles() {
     return useQuery<SubredditSafetyProfile[]>({
         queryKey: ["safety-profiles"],
         queryFn: async () => {
-            const { data } = await api.get("/api/safety/");
+            const { data } = await api.get("/api/safety");
             return data;
         },
     });
@@ -28,7 +28,7 @@ export function useCreateSafetyProfile() {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (payload: SubredditSafetyProfileCreate) => {
-            const { data } = await api.post("/api/safety/", payload);
+            const { data } = await api.post("/api/safety", payload);
             return data;
         },
         onSuccess: () => {

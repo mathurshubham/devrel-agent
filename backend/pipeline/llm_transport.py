@@ -165,10 +165,17 @@ async def text_completion(
     if acompletion_fn is None:
         from litellm import acompletion as acompletion_fn  # local import: see structured_completion
 
-    response = await acompletion_fn(
-        model=model, messages=[{"role": "user", "content": prompt}], **call_kwargs
-    )
-    content = response.choices[0].message.content if response.choices else None
-    if not content:
-        raise ValueError("LLM returned empty content")
-    return content.strip(), response
+    # One retry on empty content, mirroring structured_completion: reasoning
+    # models (e.g. openrouter/stealth/ox-alpha) intermittently return an empty
+    # content channel after a long reasoning pass.
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        response = await acompletion_fn(
+            model=model, messages=[{"role": "user", "content": prompt}], **call_kwargs
+        )
+        content = response.choices[0].message.content if response.choices else None
+        if content:
+            return content.strip(), response
+        last_exc = ValueError("LLM returned empty content")
+    assert last_exc is not None
+    raise last_exc

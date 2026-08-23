@@ -178,9 +178,15 @@ async def update_llm_config(
     result = await db.execute(stmt)
     old_config = result.scalar_one_or_none()
 
-    model_changed = bool(old_config and old_config.model_name != payload.model_name)
+    # Partial-update semantics: an omitted model_name preserves the existing
+    # one (or falls back to the platform default on first save).
+    effective_model = payload.model_name or (
+        old_config.model_name if old_config and old_config.model_name else DEFAULT_MODEL
+    )
+    model_changed = bool(old_config and old_config.model_name != effective_model)
 
     config_data = payload.model_dump(exclude={"api_key"})
+    config_data["model_name"] = effective_model
     if payload.api_key:
         config_data["encrypted_api_key"] = encrypt(payload.api_key)
         config_data["encrypted_with_key_version"] = 1
@@ -200,12 +206,12 @@ async def update_llm_config(
         persona = result.scalar_one_or_none()
 
         if persona:
-            update_persona_token_counts(persona, payload.model_name)
+            update_persona_token_counts(persona, effective_model)
             await write_audit_log(
                 db,
                 org_id,
                 action='PERSONA_TOKENS_RECALCULATED',
-                details={'new_model': payload.model_name},
+                details={"new_model": effective_model},
                 user_id=session["user_id"]
             )
 
@@ -262,7 +268,24 @@ async def update_persona(
     except Exception:
         model_limit = 4096
 
-    combined_text = (payload.master_context or '') + str(payload.rulesets_dos_donts or '')
+    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
+    result = await db.execute(stmt)
+    persona = result.scalar_one_or_none()
+
+    # PATCH semantics: only touch fields the client actually sent.
+    persona_data = payload.model_dump(exclude_unset=True)
+
+    # The 80% budget guard and the persisted token count must be computed
+    # from the MERGED persona state (existing row + this partial payload) --
+    # computing from the raw payload alone would let a partial save bypass
+    # the guard and overwrite the stored count with a near-zero value.
+    merged_master = persona_data.get(
+        "master_context", persona.master_context if persona else None
+    )
+    merged_rulesets = persona_data.get(
+        "rulesets_dos_donts", persona.rulesets_dos_donts if persona else None
+    )
+    combined_text = (merged_master or '') + str(merged_rulesets or '')
     total = count_tokens(model, combined_text)
 
     if total > model_limit * 0.80:
@@ -274,12 +297,6 @@ async def update_persona(
                 f'Reduce your content to leave room for source-platform context.'
             )
         )
-
-    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
-    result = await db.execute(stmt)
-    persona = result.scalar_one_or_none()
-
-    persona_data = payload.model_dump()
     if persona:
         for key, value in persona_data.items():
             setattr(persona, key, value)

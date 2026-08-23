@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import { Radar, Play, Download, Loader2, FileText, TrendingUp, Users } from "lucide-react";
 import { toast } from "sonner";
 
@@ -71,7 +72,7 @@ export default function IntelPage() {
             if (err?.response?.status === 409) {
                 toast.info("The Analyst is already running for this org.");
             } else {
-                toast.error(err?.response?.data?.detail || "Failed to start the Analyst run");
+                toast.error(apiErrorText(err, "Failed to start the Analyst run"));
             }
         }
     };

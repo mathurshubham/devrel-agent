@@ -117,7 +117,7 @@ async def test_render_brief_upsert_is_idempotent_for_the_same_org_and_week(monke
         assert rows[0].content_md == "# Brief version 2"
 
 
-async def test_render_brief_falls_back_to_placeholder_markdown_on_llm_failure(monkeypatch, sqlite_session_local):
+async def test_render_brief_llm_failure_fails_the_run_and_writes_no_brief(monkeypatch, sqlite_session_local):
     async def _fake_text_completion(*a, **kw):
         raise RuntimeError("provider down")
 
@@ -131,13 +131,18 @@ async def test_render_brief_falls_back_to_placeholder_markdown_on_llm_failure(mo
     }
     result = await render_brief_node(state, _config(sqlite_session_local))
 
+    # The run must FAIL loudly, mirror the cost-limit path, and write NO
+    # IntelBrief -- persisting an error string as a brief poisons next
+    # week's momentum inputs and shows a green COMPLETED chip over a failure.
+    assert result["terminal_reason"] == "llm_error"
+    assert "brief_id" not in result
+    from sqlalchemy import select
     async with sqlite_session_local() as db:
-        brief = await db.get(IntelBrief, result["brief_id"])
-        assert "Brief generation failed" in brief.content_md
+        briefs = (await db.execute(select(IntelBrief))).scalars().all()
+        assert briefs == []
         run = await db.get(AnalystRun, 1)
-        # A failed brief still completes the run -- the pipeline never
-        # silently leaves a run stuck RUNNING because of an LLM outage.
-        assert run.status == "COMPLETED"
+        assert run.status == "FAILED"
+        assert run.finished_at is not None
 
 
 async def test_render_brief_is_a_noop_when_state_is_terminal(sqlite_session_local):
