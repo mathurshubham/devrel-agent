@@ -21,9 +21,9 @@ services:
   backend:
     build: ./backend
     command: >
-      sh -c 'alembic upgrade head &&
-             python seed.py &&
-             uvicorn main:app --host 0.0.0.0 --port 8000
+      sh -c 'cd backend && alembic upgrade head && cd .. &&
+             python -m backend.seed &&
+             uvicorn backend.main:app --host 0.0.0.0 --port 8000
                --proxy-headers --forwarded-allow-ips="*"'
     env_file: .env
     depends_on:
@@ -34,25 +34,31 @@ services:
   worker_all:
     build: ./backend
     command: >
-      celery -A tasks worker
-        -Q scraper,langgen,praw_publish,maintenance
+      celery -A backend.celery_app worker
+        -Q scraper,langgen,maintenance
         --concurrency=2
         --loglevel=info
     env_file: .env
-    depends_on: [ backend ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      backend: { condition: service_started }
 
   beat:
     build: ./backend
-    command: celery -A tasks beat --loglevel=info
+    command: celery -A backend.celery_app beat --loglevel=info
     env_file: .env
-    depends_on: [ worker_all ]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      worker_all: { condition: service_started }
 
   frontend:
     build: ./frontend
     environment:
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
-      NEXT_PUBLIC_API_URL: http://backend:8000
+      BACKEND_INTERNAL_URL: http://backend:8000
     ports: [ '3000:3000' ]
     depends_on: [ backend ]
 

@@ -7,10 +7,11 @@ import {
     Megaphone,
     Library,
     Shield,
-    Key,
     Settings,
     Cpu,
-    UserCircle,
+    Database,
+    Radar,
+    LineChart,
 } from "lucide-react";
 
 import {
@@ -65,6 +66,20 @@ export function CommandPalette() {
                         <Megaphone className="mr-2 h-4 w-4 opacity-70" />
                         <span>Campaigns</span>
                     </CommandItem>
+                    <CommandItem
+                        onSelect={() => runCommand(() => router.push("/dashboard/intel"))}
+                        className="text-sm py-2"
+                    >
+                        <Radar className="mr-2 h-4 w-4 opacity-70" />
+                        <span>Intel</span>
+                    </CommandItem>
+                    <CommandItem
+                        onSelect={() => runCommand(() => router.push("/dashboard/analytics"))}
+                        className="text-sm py-2"
+                    >
+                        <LineChart className="mr-2 h-4 w-4 opacity-70" />
+                        <span>Analytics</span>
+                    </CommandItem>
                 </CommandGroup>
 
                 <CommandSeparator className="bg-border/40" />
@@ -90,18 +105,18 @@ export function CommandPalette() {
 
                 <CommandGroup heading="System & Vaults" className="text-xs font-mono uppercase tracking-widest text-muted-foreground px-2 py-1.5">
                     <CommandItem
-                        onSelect={() => runCommand(() => router.push("/dashboard/vaults/llm"))}
+                        onSelect={() => runCommand(() => router.push("/dashboard/settings"))}
                         className="text-sm py-2"
                     >
                         <Cpu className="mr-2 h-4 w-4 opacity-70" />
                         <span>LLM Configuration</span>
                     </CommandItem>
                     <CommandItem
-                        onSelect={() => runCommand(() => router.push("/dashboard/vaults/reddit"))}
+                        onSelect={() => runCommand(() => router.push("/dashboard/settings"))}
                         className="text-sm py-2"
                     >
-                        <UserCircle className="mr-2 h-4 w-4 opacity-70" />
-                        <span>Reddit Accounts</span>
+                        <Database className="mr-2 h-4 w-4 opacity-70" />
+                        <span>Apify Keys</span>
                     </CommandItem>
                     <CommandItem
                         onSelect={() => runCommand(() => router.push("/dashboard/settings"))}

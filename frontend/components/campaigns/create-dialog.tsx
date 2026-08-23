@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Loader2, Sparkles, Settings2 } from "lucide-react";
+import { Plus, Loader2, Settings2, ChevronDown } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -12,31 +12,47 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { toast } from "sonner";
-import { useCreateCampaign } from "@/hooks/use-campaigns";
+import { useCreateCampaign, Platform } from "@/hooks/use-campaigns";
 import { RuleTester } from "./rule-tester";
+import { PlatformConfigFields, DEFAULT_PLATFORM_CONFIG, type PlatformConfig } from "./platform-config-fields";
 
 interface CreateCampaignDialogProps {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
 }
 
+const PLATFORMS: { id: Platform; label: string; valueLabel: string; valuePlaceholder: string }[] = [
+    { id: "REDDIT", label: "Reddit", valueLabel: "Subreddit", valuePlaceholder: "LLMDevs" },
+    { id: "LINKEDIN", label: "LinkedIn", valueLabel: "Keyword / Profile / Company URL", valuePlaceholder: "vector search" },
+    { id: "TWITTER", label: "X / Twitter", valueLabel: "Search term", valuePlaceholder: "\"RAG pipeline\"" },
+];
+
 export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDialogProps) {
+    const [platform, setPlatform] = React.useState<Platform>("REDDIT");
     const [name, setName] = React.useState("");
-    const [subredditName, setSubredditName] = React.useState("");
+    const [value, setValue] = React.useState("");
     const [keywords, setKeywords] = React.useState("");
     const [pollFrequency, setPollFrequency] = React.useState(240);
-    const [isAutoPilot, setIsAutoPilot] = React.useState(false);
-    const [confidenceThreshold, setConfidenceThreshold] = React.useState(0.95);
+    const [dailyDraftCap, setDailyDraftCap] = React.useState(3);
+    const [platformConfig, setPlatformConfig] = React.useState<PlatformConfig>(DEFAULT_PLATFORM_CONFIG.REDDIT);
+    const [advancedOpen, setAdvancedOpen] = React.useState(false);
 
     const { mutate: createCampaign, isPending } = useCreateCampaign();
+
+    const platformMeta = PLATFORMS.find((p) => p.id === platform)!;
+
+    const handlePlatformChange = (p: Platform) => {
+        setPlatform(p);
+        setPlatformConfig(DEFAULT_PLATFORM_CONFIG[p]);
+    };
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (!name || !subredditName) {
-            toast.error("Name and Subreddit are required");
+        if (!name || !value) {
+            toast.error("Name and target value are required");
             return;
         }
 
@@ -47,23 +63,26 @@ export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDia
 
         createCampaign(
             {
-                name: name,
-                subreddit_name: subredditName,
+                name,
+                platform,
+                value,
                 keywords: keywordsArray,
                 poll_frequency_minutes: pollFrequency,
-                is_auto_pilot_enabled: isAutoPilot,
-                auto_pilot_confidence_threshold: confidenceThreshold,
+                daily_draft_cap: dailyDraftCap,
+                platform_config: platformConfig as unknown as Record<string, unknown>,
             },
             {
-                onSuccess: (data) => {
+                onSuccess: () => {
                     toast.success(`Campaign '${name}' created!`);
                     onOpenChange(false);
-                    // Reset form
                     setName("");
-                    setSubredditName("");
+                    setValue("");
                     setKeywords("");
                     setPollFrequency(240);
-                    setIsAutoPilot(false);
+                    setDailyDraftCap(3);
+                    setPlatform("REDDIT");
+                    setPlatformConfig(DEFAULT_PLATFORM_CONFIG.REDDIT);
+                    setAdvancedOpen(false);
                 },
                 onError: (error: any) => {
                     toast.error(`Failed to create campaign: ${error.message}`);
@@ -82,6 +101,29 @@ export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDia
                     </DialogTitle>
                 </DialogHeader>
                 <form onSubmit={handleSubmit} className="space-y-5 py-4">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
+                            Platform
+                        </label>
+                        <div className="grid grid-cols-3 gap-2">
+                            {PLATFORMS.map((p) => (
+                                <button
+                                    key={p.id}
+                                    type="button"
+                                    onClick={() => handlePlatformChange(p.id)}
+                                    disabled={isPending}
+                                    className={`h-9 rounded-md border text-xs font-bold transition-colors ${
+                                        platform === p.id
+                                            ? "border-primary bg-primary/10 text-primary"
+                                            : "border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground"
+                                    }`}
+                                >
+                                    {p.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
@@ -97,18 +139,15 @@ export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDia
                         </div>
                         <div className="space-y-2">
                             <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
-                                Subreddit
+                                {platformMeta.valueLabel}
                             </label>
-                            <div className="relative">
-                                <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">r/</span>
-                                <Input
-                                    placeholder="LLMDevs"
-                                    className="pl-7 h-9 text-sm bg-muted/20 border-border/40"
-                                    value={subredditName}
-                                    onChange={(e) => setSubredditName(e.target.value)}
-                                    disabled={isPending}
-                                />
-                            </div>
+                            <Input
+                                placeholder={platformMeta.valuePlaceholder}
+                                className="h-9 text-sm bg-muted/20 border-border/40"
+                                value={value}
+                                onChange={(e) => setValue(e.target.value)}
+                                disabled={isPending}
+                            />
                         </div>
                     </div>
 
@@ -125,38 +164,6 @@ export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDia
                         />
                     </div>
 
-                    <div className="flex items-center justify-between p-3 rounded-lg border border-border/40 bg-muted/5">
-                        <div className="space-y-0.5">
-                            <label className="text-xs font-bold flex items-center gap-2">
-                                <Sparkles className="h-3.5 w-3.5 text-amber-500" /> Auto-Pilot Mode
-                            </label>
-                            <p className="text-[10px] text-muted-foreground">Automatically publish drafts with high confidence</p>
-                        </div>
-                        <Switch
-                            checked={isAutoPilot}
-                            onCheckedChange={setIsAutoPilot}
-                            disabled={isPending}
-                        />
-                    </div>
-
-                    {isAutoPilot && (
-                        <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
-                            <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
-                                Confidence Threshold (0.0 - 1.0)
-                            </label>
-                            <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                max="1"
-                                className="h-9 text-sm bg-muted/10 border-border/40"
-                                value={confidenceThreshold}
-                                onChange={(e) => setConfidenceThreshold(parseFloat(e.target.value))}
-                                disabled={isPending}
-                            />
-                        </div>
-                    )}
-
                     <div className="space-y-2">
                         <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
                             Poll Frequency (minutes)
@@ -171,12 +178,39 @@ export function CreateCampaignDialog({ isOpen, onOpenChange }: CreateCampaignDia
                         />
                     </div>
 
-                    {/* Rule Tester Integration */}
-                    {/* For new campaigns, we can't test against ID yet, so we pass undefined */}
-                    {/* In a real app, we might allow testing keywords against text without a campaign ID */}
-                    <RuleTester
-                        keywords={keywords.split(",").map(k => k.trim())}
-                    />
+                    <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                        <CollapsibleTrigger
+                            type="button"
+                            className="flex w-full items-center justify-between rounded-md border border-border/40 bg-muted/10 px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                            Advanced ({platformMeta.label} platform config)
+                            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-4 space-y-4">
+                            <PlatformConfigFields
+                                platform={platform}
+                                config={platformConfig}
+                                onChange={setPlatformConfig}
+                                disabled={isPending}
+                            />
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block">
+                                    Daily draft cap
+                                </label>
+                                <Input
+                                    type="number"
+                                    min={1}
+                                    className="h-9 text-sm bg-muted/20 border-border/40"
+                                    value={dailyDraftCap}
+                                    disabled={isPending}
+                                    onChange={(e) => setDailyDraftCap(parseInt(e.target.value) || 1)}
+                                />
+                            </div>
+                        </CollapsibleContent>
+                    </Collapsible>
+
+                    {/* Rule Tester Integration — only usable once the campaign has an id */}
+                    <RuleTester keywords={keywords.split(",").map((k) => k.trim())} />
 
                     <DialogFooter className="pt-2">
                         <Button

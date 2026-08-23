@@ -5,7 +5,7 @@ import asyncio
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 from backend.database import SessionLocal
-from backend.models import OrgLLMConfig, RedditAccount, AuditLog
+from backend.models import OrgLLMConfig, OrgApifyToken, AuditLog
 
 def get_fernet(secret_hex: str) -> Fernet:
     if len(secret_hex) != 64:
@@ -42,26 +42,26 @@ async def main():
             except Exception as e:
                 print(f"Failed to rotate OrgLLMConfig {config.id}: {e}", file=sys.stderr)
                 
-        # 2. Rotate RedditAccount
-        result = await db.execute(select(RedditAccount).where(RedditAccount.encrypted_secret.is_not(None)))
-        accounts = result.scalars().all()
-        for account in accounts:
+        # 2. Rotate OrgApifyToken
+        result = await db.execute(select(OrgApifyToken).where(OrgApifyToken.encrypted_token.is_not(None)))
+        tokens = result.scalars().all()
+        for token in tokens:
             try:
-                decrypted = old_fernet.decrypt(account.encrypted_secret.encode()).decode()
-                account.encrypted_secret = new_fernet.encrypt(decrypted.encode()).decode()
-                account.encrypted_with_key_version += 1
-                
+                decrypted = old_fernet.decrypt(token.encrypted_token.encode()).decode()
+                token.encrypted_token = new_fernet.encrypt(decrypted.encode()).decode()
+                token.encrypted_with_key_version += 1
+
                 db.add(AuditLog(
-                    org_id=account.org_id,
+                    org_id=token.org_id,
                     action="ENCRYPTION_KEY_ROTATED",
-                    details={"model": "RedditAccount", "id": account.id, "new_version": account.encrypted_with_key_version}
+                    details={"model": "OrgApifyToken", "id": token.id, "new_version": token.encrypted_with_key_version}
                 ))
             except Exception as e:
-                print(f"Failed to rotate RedditAccount {account.id}: {e}", file=sys.stderr)
-                
+                print(f"Failed to rotate OrgApifyToken {token.id}: {e}", file=sys.stderr)
+
         # Commit all key updates and audit logs in a single transaction
         await db.commit()
-        print("Successfully rotated encryption keys for OrgLLMConfig and RedditAccount.")
+        print("Successfully rotated encryption keys for OrgLLMConfig and OrgApifyToken.")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,38 +1,44 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useApi } from "@/hooks/use-api";
+
+export type Platform = "REDDIT" | "LINKEDIN" | "TWITTER";
+export type PromptType = "MASTER_CONTEXT" | "ANGLE" | "SCOUT" | "ANALYST";
 
 export interface PromptTemplate {
     id: number;
-    title: string;
-    description: string;
-    category: string;
-    prompt_body: string;
+    org_id: number | null; // null = system default
+    platform: Platform;
+    type: PromptType;
+    name: string;
+    content: string;
     version: number;
-    is_system_default: boolean;
-    org_id?: number;
+}
+
+export interface CreatePromptPayload {
+    platform: Platform;
+    type: PromptType;
+    name: string;
+    content: string;
 }
 
 export function usePrompts() {
+    const api = useApi();
     return useQuery({
         queryKey: ["prompts"],
         queryFn: async (): Promise<PromptTemplate[]> => {
-            const res = await fetch("/api/prompts");
-            if (!res.ok) throw new Error("Failed to fetch prompts");
-            return res.json();
+            const { data } = await api.get("/api/prompts");
+            return data;
         },
     });
 }
 
 export function useCreatePrompt() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: async (payload: Partial<PromptTemplate>) => {
-            const res = await fetch("/api/prompts", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok) throw new Error("Failed to create prompt");
-            return res.json();
+        mutationFn: async (payload: CreatePromptPayload) => {
+            const { data } = await api.post("/api/prompts", payload);
+            return data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["prompts"] });
@@ -41,19 +47,12 @@ export function useCreatePrompt() {
 }
 
 export function useUpdatePrompt() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<PromptTemplate> & { id: number }) => {
-            const res = await fetch(`/api/prompts/${id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || "Failed to update prompt");
-            }
-            return res.json();
+        mutationFn: async ({ id, content }: { id: number; content: string }) => {
+            const { data } = await api.patch(`/api/prompts/${id}`, { content });
+            return data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["prompts"] });
@@ -62,16 +61,11 @@ export function useUpdatePrompt() {
 }
 
 export function useDeletePrompt() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (id: number) => {
-            const res = await fetch(`/api/prompts/${id}`, {
-                method: "DELETE",
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || "Failed to delete prompt");
-            }
+            await api.delete(`/api/prompts/${id}`);
             return true;
         },
         onSuccess: () => {

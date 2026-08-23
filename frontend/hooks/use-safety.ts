@@ -1,12 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import axios from "axios";
+import { useApi } from "@/hooks/use-api";
 
 export interface SubredditSafetyProfile {
     id: number;
     org_id: number;
-    subreddit_name: string;
-    allow_auto_pilot: boolean;
-    max_daily_posts: number;
+    subreddit: string;
+    max_daily_drafts: number;
     require_manual_review: boolean;
     notes?: string;
 }
@@ -14,20 +13,22 @@ export interface SubredditSafetyProfile {
 export type SubredditSafetyProfileCreate = Omit<SubredditSafetyProfile, "id" | "org_id">;
 
 export function useSafetyProfiles() {
+    const api = useApi();
     return useQuery<SubredditSafetyProfile[]>({
         queryKey: ["safety-profiles"],
         queryFn: async () => {
-            const { data } = await axios.get("/api/safety/");
+            const { data } = await api.get("/api/safety/");
             return data;
         },
     });
 }
 
 export function useCreateSafetyProfile() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (payload: SubredditSafetyProfileCreate) => {
-            const { data } = await axios.post("/api/safety/", payload);
+            const { data } = await api.post("/api/safety/", payload);
             return data;
         },
         onSuccess: () => {
@@ -37,10 +38,11 @@ export function useCreateSafetyProfile() {
 }
 
 export function useUpdateSafetyProfile() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async ({ id, ...payload }: SubredditSafetyProfile & { id: number }) => {
-            const { data } = await axios.put(`/api/safety/${id}`, payload);
+            const { data } = await api.put(`/api/safety/${id}`, payload);
             return data;
         },
         onSuccess: () => {
@@ -50,10 +52,11 @@ export function useUpdateSafetyProfile() {
 }
 
 export function useDeleteSafetyProfile() {
+    const api = useApi();
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async (id: number) => {
-            const { data } = await axios.delete(`/api/safety/${id}`);
+            const { data } = await api.delete(`/api/safety/${id}`);
             return data;
         },
         onSuccess: () => {
