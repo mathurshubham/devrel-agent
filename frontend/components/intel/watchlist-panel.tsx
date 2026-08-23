@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import { Plus, Trash2, Loader2, Users, Building2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -41,7 +42,7 @@ function AuthorsPanel() {
             setProfileUrl("");
             setTier(1);
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to add author");
+            toast.error(apiErrorText(err, "Failed to add author"));
         }
     };
 
@@ -50,7 +51,7 @@ function AuthorsPanel() {
             await deleteAuthor.mutateAsync(id);
             toast.success("Author removed");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to remove author");
+            toast.error(apiErrorText(err, "Failed to remove author"));
         }
     };
 
@@ -149,7 +150,7 @@ function CompetitorsPanel() {
             setName("");
             setUrl("");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to add competitor");
+            toast.error(apiErrorText(err, "Failed to add competitor"));
         }
     };
 
@@ -158,7 +159,7 @@ function CompetitorsPanel() {
             await deleteCompetitor.mutateAsync(id);
             toast.success("Competitor removed");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to remove competitor");
+            toast.error(apiErrorText(err, "Failed to remove competitor"));
         }
     };
 

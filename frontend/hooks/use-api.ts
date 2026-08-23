@@ -39,3 +39,23 @@ export const useApi = () => {
 
     return api;
 };
+
+// FastAPI error payloads are not always strings: Pydantic validation errors
+// arrive as an array of objects, which must never reach a React child or a
+// toast directly (React error #31 tears down the whole tree). Always funnel
+// API errors through this helper.
+export function apiErrorText(err: unknown, fallback = "Request failed"): string {
+    const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+        const msgs = detail
+            .map((d) => (typeof d === "object" && d !== null && "msg" in d ? String((d as { msg: unknown }).msg) : String(d)))
+            .filter(Boolean);
+        if (msgs.length) return msgs.join("; ");
+    }
+    if (detail !== undefined && detail !== null) {
+        try { return JSON.stringify(detail); } catch { /* fall through */ }
+    }
+    const message = (err as { message?: unknown })?.message;
+    return typeof message === "string" && message ? message : fallback;
+}

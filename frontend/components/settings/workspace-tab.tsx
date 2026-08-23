@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import { Loader2, MessageSquareQuote, Bot, Linkedin, Radar, ShieldAlert, Tags, DollarSign, X, Plus, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -121,7 +122,7 @@ export function WorkspaceTab() {
             });
             toast.success("Workspace settings saved");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to save workspace settings");
+            toast.error(apiErrorText(err, "Failed to save workspace settings"));
         }
     };
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import {
     Plus,
     ShieldCheck,
@@ -109,7 +110,7 @@ export default function SafetyProfilesPage() {
             }
             setIsDialogOpen(false);
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || "Failed to save profile");
+            toast.error(apiErrorText(err, "Failed to save profile"));
         }
     };
 

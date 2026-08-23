@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import { BookOpen, Save, AlertTriangle, Loader2, Plus, Trash2, Shield, BrainCircuit, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -75,7 +76,7 @@ function NewTemplateDialog({ open, onOpenChange }: { open: boolean; onOpenChange
                     onOpenChange(false);
                     reset();
                 },
-                onError: (err: any) => toast.error(err?.response?.data?.detail || "Failed to create template"),
+                onError: (err: any) => toast.error(apiErrorText(err, "Failed to create template")),
             }
         );
     };
@@ -150,7 +151,7 @@ function TemplateCard({ prompt }: { prompt: PromptTemplate }) {
             { id: prompt.id, content },
             {
                 onSuccess: () => toast.success(`"${prompt.name}" updated to v${prompt.version + 1}`),
-                onError: (err: any) => toast.error(err?.response?.data?.detail || "Update failed"),
+                onError: (err: any) => toast.error(apiErrorText(err, "Update failed")),
             }
         );
     };
@@ -165,7 +166,7 @@ function TemplateCard({ prompt }: { prompt: PromptTemplate }) {
             },
             {
                 onSuccess: () => toast.success("Created an editable org copy"),
-                onError: (err: any) => toast.error(err?.response?.data?.detail || "Failed to customize"),
+                onError: (err: any) => toast.error(apiErrorText(err, "Failed to customize")),
             }
         );
     };

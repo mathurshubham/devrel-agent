@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import {
     Key,
     Bot,
@@ -89,7 +90,7 @@ function ApifyKeysTab() {
             setLabel("");
             setToken("");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to add token");
+            toast.error(apiErrorText(err, "Failed to add token"));
         }
     };
 
@@ -104,7 +105,7 @@ function ApifyKeysTab() {
             toast.success("Plan cap updated");
             setEditingCapId(null);
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to update cap");
+            toast.error(apiErrorText(err, "Failed to update cap"));
         }
     };
 
@@ -113,7 +114,7 @@ function ApifyKeysTab() {
             await deleteToken.mutateAsync(id);
             toast.success("Token removed");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to remove token");
+            toast.error(apiErrorText(err, "Failed to remove token"));
         } finally {
             setDeleteTarget(null);
         }
@@ -301,13 +302,16 @@ export default function SettingsPage() {
             await updateLLM.mutateAsync({
                 provider,
                 api_key: apiKey || undefined,
+                // Include the currently configured model so a key save is a
+                // one-step setup; the backend preserves/defaults it if empty.
+                model_name: modelName || undefined,
                 custom_base_url: (provider === "ollama" || provider === "custom") ? customBaseUrl : undefined,
             });
             toast.success(`${provider} configuration updated`);
             setEditingProvider(null);
             setApiKey("");
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to save key");
+            toast.error(apiErrorText(err, "Failed to save key"));
         }
     };
 
@@ -325,7 +329,7 @@ export default function SettingsPage() {
             toast.success("Active model updated");
             setEditingModel(false);
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to update model");
+            toast.error(apiErrorText(err, "Failed to update model"));
         }
     };
 
@@ -335,7 +339,7 @@ export default function SettingsPage() {
             toast.success("Kill switch activated — all campaigns paused.");
             setKillSwitchDialogOpen(false);
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to activate kill switch");
+            toast.error(apiErrorText(err, "Failed to activate kill switch"));
         }
     };
 
