@@ -13,6 +13,11 @@ COPY . .
 # Build the Next.js app
 # Disable linting and type checking during build to speed up and avoid failures in dev
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* vars are inlined into the client bundle at build time, so the
+# Clerk publishable key must be present here — a runtime env var alone leaves
+# the browser bundle without a key and Clerk never initializes.
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 RUN npm run build
 
 # Stage 2: Running the app
