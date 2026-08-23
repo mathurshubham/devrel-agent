@@ -756,9 +756,6 @@ async def aggregate_node(state: AnalystState, config: RunnableConfig) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _fallback_brief(week_of_str: str, exc: Exception) -> str:
-    return f"# Weekly Intel Brief — Week of {week_of_str}\n\n*Brief generation failed: {exc}*"
-
 
 async def render_brief_node(state: AnalystState, config: RunnableConfig) -> dict:
     if state.get("terminal"):
@@ -861,8 +858,21 @@ async def render_brief_node(state: AnalystState, config: RunnableConfig) -> dict
     try:
         brief_md, response = await text_completion(prompt, model, call_kwargs)
     except Exception as exc:  # noqa: BLE001 - a brief that failed to generate must not crash the run
+        # Mirror the cost-limit path: the run FAILS, no IntelBrief is written.
+        # Persisting an error string as a "brief" poisons next week's
+        # momentum inputs and shows a green COMPLETED chip over a failure.
         logger.error("Analyst render_brief failed for org=%s run=%s: %s", org_id, run_id, exc)
-        brief_md = _fallback_brief(week_of_str, exc)
+        async with session_local() as db:
+            run = await db.get(AnalystRun, run_id)
+            if run:
+                run.status = "FAILED"
+                run.finished_at = now_utc()
+            await _log_system(
+                db, org_id, "ERROR", "pipeline.analyst.render_brief",
+                f"Analyst run {run_id}: brief generation failed: {exc}",
+            )
+            await db.commit()
+        return {"terminal": True, "terminal_reason": "llm_error"}
 
     week_of_date = date.fromisoformat(week_of_str)
     async with session_local() as db:
