@@ -13,7 +13,14 @@ class LLMConfigUpdate(BaseModel):
         default="openrouter",
         description="LLM provider: openrouter (default), openai, anthropic, gemini, ollama, custom",
     )
-    model_name: str = Field(..., description="Model name, e.g. openrouter/openai/gpt-4o")
+    model_name: Optional[str] = Field(
+        None,
+        description=(
+            "Model name, e.g. openrouter/openai/gpt-4o. Optional on partial "
+            "updates: when omitted, the org's existing model (or the platform "
+            "default) is preserved."
+        ),
+    )
     custom_base_url: Optional[str] = Field(
         None, description="Required when provider == 'custom' (or self-hosted Ollama/vLLM)"
     )
