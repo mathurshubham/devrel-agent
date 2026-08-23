@@ -31,13 +31,13 @@ class LLMConfigUpdate(BaseModel):
 
 class PersonaUpdate(BaseModel):
     master_context: Optional[str] = None
-    rulesets_dos_donts: Optional[Dict[str, List[str]]] = None
+    rulesets_dos_donts: Optional[str] = None
     tone_guidelines: Optional[str] = None
 
 
 class PersonaResponse(BaseModel):
     master_context: Optional[str] = None
-    rulesets_dos_donts: Optional[Dict[str, List[str]]] = None
+    rulesets_dos_donts: Optional[str] = None
     tone_guidelines: Optional[str] = None
     master_context_token_count: int = 0
     model_config = ConfigDict(from_attributes=True)

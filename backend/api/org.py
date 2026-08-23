@@ -285,7 +285,8 @@ async def update_persona(
     result = await db.execute(stmt)
     persona = result.scalar_one_or_none()
 
-    persona_data = payload.model_dump()
+    # PATCH semantics: only touch fields the client actually sent.
+    persona_data = payload.model_dump(exclude_unset=True)
     if persona:
         for key, value in persona_data.items():
             setattr(persona, key, value)
