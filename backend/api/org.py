@@ -268,7 +268,24 @@ async def update_persona(
     except Exception:
         model_limit = 4096
 
-    combined_text = (payload.master_context or '') + str(payload.rulesets_dos_donts or '')
+    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
+    result = await db.execute(stmt)
+    persona = result.scalar_one_or_none()
+
+    # PATCH semantics: only touch fields the client actually sent.
+    persona_data = payload.model_dump(exclude_unset=True)
+
+    # The 80% budget guard and the persisted token count must be computed
+    # from the MERGED persona state (existing row + this partial payload) --
+    # computing from the raw payload alone would let a partial save bypass
+    # the guard and overwrite the stored count with a near-zero value.
+    merged_master = persona_data.get(
+        "master_context", persona.master_context if persona else None
+    )
+    merged_rulesets = persona_data.get(
+        "rulesets_dos_donts", persona.rulesets_dos_donts if persona else None
+    )
+    combined_text = (merged_master or '') + str(merged_rulesets or '')
     total = count_tokens(model, combined_text)
 
     if total > model_limit * 0.80:
@@ -280,13 +297,6 @@ async def update_persona(
                 f'Reduce your content to leave room for source-platform context.'
             )
         )
-
-    stmt = select(OrgPersona).where(OrgPersona.org_id == org_id)
-    result = await db.execute(stmt)
-    persona = result.scalar_one_or_none()
-
-    # PATCH semantics: only touch fields the client actually sent.
-    persona_data = payload.model_dump(exclude_unset=True)
     if persona:
         for key, value in persona_data.items():
             setattr(persona, key, value)
