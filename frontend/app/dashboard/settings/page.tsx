@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { apiErrorText } from "@/hooks/use-api";
 import {
     Key,
     Bot,
@@ -89,7 +90,7 @@ function ApifyKeysTab() {
             setLabel("");
             setToken("");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to add token");
+            toast.error(apiErrorText(err, "Failed to add token"));
         }
     };
 
@@ -104,7 +105,7 @@ function ApifyKeysTab() {
             toast.success("Plan cap updated");
             setEditingCapId(null);
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to update cap");
+            toast.error(apiErrorText(err, "Failed to update cap"));
         }
     };
 
@@ -113,7 +114,7 @@ function ApifyKeysTab() {
             await deleteToken.mutateAsync(id);
             toast.success("Token removed");
         } catch (err: any) {
-            toast.error(err?.response?.data?.detail || "Failed to remove token");
+            toast.error(apiErrorText(err, "Failed to remove token"));
         } finally {
             setDeleteTarget(null);
         }
@@ -164,17 +165,17 @@ function ApifyKeysTab() {
                 ) : (
                     <div className="flex flex-col gap-3">
                         {tokens.map((t) => {
-                            const credit = credits?.find((c) => c.token_id === t.id);
+                            const credit = credits?.tokens?.find((c) => c.token_id === t.id);
                             let barColor = "bg-green-500";
-                            if (credit && credit.pct >= 90) barColor = "bg-red-500";
-                            else if (credit && credit.pct >= 70) barColor = "bg-amber-500";
+                            if (credit && credit.pct_used >= 90) barColor = "bg-red-500";
+                            else if (credit && credit.pct_used >= 70) barColor = "bg-amber-500";
 
                             return (
                                 <div key={t.id} className="rounded-md border border-border/40 bg-background p-3 space-y-2">
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <span className="text-sm font-medium">{t.label}</span>
-                                            <Badge variant="outline" className="text-[9px] font-mono py-0 h-4">{t.masked}</Badge>
+                                            <Badge variant="outline" className="text-[9px] font-mono py-0 h-4">{t.masked_token}</Badge>
                                             {!t.is_active && (
                                                 <Badge variant="secondary" className="text-[9px] py-0 h-4">Inactive</Badge>
                                             )}
@@ -218,14 +219,14 @@ function ApifyKeysTab() {
                                     {credit && (
                                         <div className="space-y-1">
                                             <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground">
-                                                <span>${credit.used_usd.toFixed(2)} / ${credit.cap_usd.toFixed(2)}</span>
-                                                <span>{credit.pct.toFixed(0)}%</span>
+                                                <span>${credit.used_usd.toFixed(2)} / ${credit.max_usd.toFixed(2)}</span>
+                                                <span>{credit.pct_used.toFixed(0)}%</span>
                                             </div>
                                             <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
-                                                <div className={`h-full ${barColor}`} style={{ width: `${Math.min(credit.pct, 100)}%` }} />
+                                                <div className={`h-full ${barColor}`} style={{ width: `${Math.min(credit.pct_used, 100)}%` }} />
                                             </div>
                                             <div className="text-[9px] text-muted-foreground font-mono">
-                                                Cycle {new Date(credit.cycle_start).toLocaleDateString()} – {new Date(credit.cycle_end).toLocaleDateString()}
+                                                Cycle {(credit.usage_cycle_start ? new Date(credit.usage_cycle_start).toLocaleDateString() : '—')} – {(credit.usage_cycle_end ? new Date(credit.usage_cycle_end).toLocaleDateString() : '—')}
                                                 {!credit.is_usable && <span className="text-red-500 ml-1">· not usable{credit.error ? `: ${credit.error}` : ""}</span>}
                                             </div>
                                         </div>
@@ -301,13 +302,16 @@ export default function SettingsPage() {
             await updateLLM.mutateAsync({
                 provider,
                 api_key: apiKey || undefined,
+                // Include the currently configured model so a key save is a
+                // one-step setup; the backend preserves/defaults it if empty.
+                model_name: modelName || undefined,
                 custom_base_url: (provider === "ollama" || provider === "custom") ? customBaseUrl : undefined,
             });
             toast.success(`${provider} configuration updated`);
             setEditingProvider(null);
             setApiKey("");
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to save key");
+            toast.error(apiErrorText(err, "Failed to save key"));
         }
     };
 
@@ -325,7 +329,7 @@ export default function SettingsPage() {
             toast.success("Active model updated");
             setEditingModel(false);
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to update model");
+            toast.error(apiErrorText(err, "Failed to update model"));
         }
     };
 
@@ -335,7 +339,7 @@ export default function SettingsPage() {
             toast.success("Kill switch activated — all campaigns paused.");
             setKillSwitchDialogOpen(false);
         } catch (err: any) {
-            toast.error(err.response?.data?.detail || err.message || "Failed to activate kill switch");
+            toast.error(apiErrorText(err, "Failed to activate kill switch"));
         }
     };
 

@@ -4,22 +4,27 @@ import { useApi } from "@/hooks/use-api";
 export interface ApifyToken {
     id: number;
     label: string;
-    masked: string;
+    masked_token: string;
     plan_cap_usd: number;
     is_active: boolean;
 }
 
 export interface ApifyCredit {
-    token_id: number;
-    label: string;
+    token_id: number | null;
+    label: string | null;
     used_usd: number;
-    cap_usd: number;
+    max_usd: number;
     remaining_usd: number;
-    pct: number;
-    cycle_start: string;
-    cycle_end: string;
+    pct_used: number;
+    usage_cycle_start: string | null;
+    usage_cycle_end: string | null;
     is_usable: boolean;
     error?: string | null;
+}
+
+export interface ApifyCreditsResponse {
+    tokens: ApifyCredit[];
+    total_remaining_usd: number;
 }
 
 export interface AddApifyTokenPayload {
@@ -42,7 +47,7 @@ export function useApifyCredits() {
     const api = useApi();
     return useQuery({
         queryKey: ["apify-credits"],
-        queryFn: async (): Promise<ApifyCredit[]> => {
+        queryFn: async (): Promise<ApifyCreditsResponse> => {
             const { data } = await api.get("/api/org/apify/credits");
             return data;
         },

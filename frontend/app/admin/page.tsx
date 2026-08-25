@@ -1,7 +1,8 @@
 'use client';
 
 import { useUser } from '@clerk/nextjs';
-import { useApi } from '@/hooks/use-api';
+
+import { useApi, apiErrorText } from '@/hooks/use-api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -55,7 +56,7 @@ export default function AdminDashboard() {
             if (error.response?.status === 403) {
                 toast.error('403 Forbidden: You do not have permission to perform this action.');
             } else {
-                toast.error(error.response?.data?.detail || 'Failed to promote user.');
+                toast.error(apiErrorText(error, 'Failed to promote user.'));
             }
         },
     });

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useApi } from "@/hooks/use-api";
+import { useApi, apiErrorText } from "@/hooks/use-api";
 
 export interface OrgPersona {
     master_context?: string;
@@ -20,7 +20,7 @@ export function usePersona() {
                 if (err?.response?.status === 404) {
                     return { master_context: "", rulesets_dos_donts: "", tone_guidelines: "" };
                 }
-                throw new Error(err?.response?.data?.detail || "Failed to fetch persona");
+                throw new Error(apiErrorText(err, "Failed to fetch persona"));
             }
         },
     });
@@ -35,7 +35,7 @@ export function useUpdatePersona() {
                 const { data } = await api.patch("/api/org/persona", payload);
                 return data;
             } catch (err: any) {
-                throw new Error(err?.response?.data?.detail || "Failed to update persona");
+                throw new Error(apiErrorText(err, "Failed to update persona"));
             }
         },
         onSuccess: () => {

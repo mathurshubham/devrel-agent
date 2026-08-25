@@ -542,7 +542,7 @@ async def strategist_node(state: PipelineState, config: RunnableConfig) -> dict:
     persona_block = ""
     if persona:
         persona_block = (
-            f"Rules (Do's & Don'ts): {persona.rulesets_dos_donts or '{}'}\n\n"
+            f"Rules (Do's & Don'ts): {persona.rulesets_dos_donts or 'None set.'}\n\n"
             f"Tone Guidelines: {persona.tone_guidelines or ''}"
         )
     base_master_context = master_context_row.content if master_context_row else ""

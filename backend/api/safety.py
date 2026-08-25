@@ -13,7 +13,7 @@ from backend.utils.audit import write_audit_log
 router = APIRouter(prefix="/api/safety", tags=["Safety Profiles"])
 
 
-@router.get("/", response_model=List[SubredditSafetyProfileSchema])
+@router.get("", response_model=List[SubredditSafetyProfileSchema])
 async def list_safety_profiles(
     db: AsyncSession = Depends(get_db),
     session: dict = Depends(get_current_session)
@@ -26,7 +26,7 @@ async def list_safety_profiles(
     return result.scalars().all()
 
 
-@router.post("/", response_model=SubredditSafetyProfileSchema)
+@router.post("", response_model=SubredditSafetyProfileSchema)
 async def create_safety_profile(
     payload: SubredditSafetyProfileCreate,
     db: AsyncSession = Depends(get_db),

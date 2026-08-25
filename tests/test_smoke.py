@@ -19,7 +19,7 @@ def test_app_imports_and_exposes_expected_routes():
     assert "/api/org/llm-config" in paths
     assert "/api/org/kill-switch" in paths
     assert "/api/prompts" in paths
-    assert "/api/safety/" in paths
+    assert "/api/safety" in paths
     assert "/api/admin/organizations" in paths
     assert "/api/webhooks/clerk" in paths
 

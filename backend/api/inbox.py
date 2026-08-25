@@ -100,8 +100,8 @@ async def list_drafts(
         stmt = stmt.where(DraftReply.signal_tier == signal_tier)
     if status:
         stmt = stmt.where(DraftReply.status == status)
-    else:
-        stmt = stmt.where(DraftReply.status == DraftStatus.PENDING)
+    # No status filter means ALL statuses -- the frontend's "All" chip and
+    # search rely on this; defaulting to PENDING hid every processed draft.
     if q:
         like_pattern = f"%{_escape_like(q)}%"
         stmt = stmt.where(

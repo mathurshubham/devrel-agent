@@ -13,7 +13,14 @@ class LLMConfigUpdate(BaseModel):
         default="openrouter",
         description="LLM provider: openrouter (default), openai, anthropic, gemini, ollama, custom",
     )
-    model_name: str = Field(..., description="Model name, e.g. openrouter/openai/gpt-4o")
+    model_name: Optional[str] = Field(
+        None,
+        description=(
+            "Model name, e.g. openrouter/openai/gpt-4o. Optional on partial "
+            "updates: when omitted, the org's existing model (or the platform "
+            "default) is preserved."
+        ),
+    )
     custom_base_url: Optional[str] = Field(
         None, description="Required when provider == 'custom' (or self-hosted Ollama/vLLM)"
     )
@@ -24,13 +31,13 @@ class LLMConfigUpdate(BaseModel):
 
 class PersonaUpdate(BaseModel):
     master_context: Optional[str] = None
-    rulesets_dos_donts: Optional[Dict[str, List[str]]] = None
+    rulesets_dos_donts: Optional[str] = None
     tone_guidelines: Optional[str] = None
 
 
 class PersonaResponse(BaseModel):
     master_context: Optional[str] = None
-    rulesets_dos_donts: Optional[Dict[str, List[str]]] = None
+    rulesets_dos_donts: Optional[str] = None
     tone_guidelines: Optional[str] = None
     master_context_token_count: int = 0
     model_config = ConfigDict(from_attributes=True)
